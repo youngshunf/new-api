@@ -100,6 +100,12 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			} else {
 				fullRequestURL = fmt.Sprintf("%s/api/v1/services/aigc/multimodal-generation/generation", info.ChannelBaseUrl)
 			}
+		case constant.RelayModeAudioSpeech:
+			// DashScope qwen3-tts uses multimodal-generation endpoint
+			fullRequestURL = fmt.Sprintf("%s/api/v1/services/aigc/multimodal-generation/generation", info.ChannelBaseUrl)
+		case constant.RelayModeAudioTranscription, constant.RelayModeAudioTranslation:
+			// DashScope ASR (qwen3-asr) via OpenAI-compatible chat completions endpoint (using input_audio)
+			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/chat/completions", info.ChannelBaseUrl)
 		case constant.RelayModeCompletions:
 			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/completions", info.ChannelBaseUrl)
 		default:
@@ -207,8 +213,14 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+	if info.RelayMode == constant.RelayModeAudioSpeech {
+		return ConvertAudioRequestForAli(c, info, request)
+	} else if info.RelayMode == constant.RelayModeAudioTranscription || info.RelayMode == constant.RelayModeAudioTranslation {
+		return ConvertAudioRequestForAliSTT(c, info, request)
+	}
+	
+	oaiAdaptor := &openai.Adaptor{}
+	return oaiAdaptor.ConvertAudioRequest(c, info, request)
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
@@ -237,6 +249,11 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			err, usage = aliImageHandler(a, c, resp, info)
 		case constant.RelayModeRerank:
 			err, usage = RerankHandler(c, resp, info)
+		case constant.RelayModeAudioSpeech:
+			// TTS: DashScope returns JSON with audio URL, need custom handler
+			err, usage = AliTTSHandler(c, resp, info)
+		case constant.RelayModeAudioTranscription, constant.RelayModeAudioTranslation:
+			usage, err = AliSTTHandler(c, resp, info)
 		default:
 			adaptor := openai.Adaptor{}
 			usage, err = adaptor.DoResponse(c, resp, info)
