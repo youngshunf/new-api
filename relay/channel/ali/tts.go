@@ -146,46 +146,17 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 
 	audioURL := aliResp.Output.Audio.URL
-	logger.LogInfo(c, fmt.Sprintf("Ali TTS: downloading audio from %s", audioURL))
+	logger.LogInfo(c, fmt.Sprintf("Ali TTS: redirecting to audio URL %s", audioURL))
 
-	// Download the audio file from the URL
-	httpClient := &http.Client{}
-	audioResp, err := httpClient.Get(audioURL)
-	if err != nil {
-		return types.NewError(
-			fmt.Errorf("failed to download TTS audio: %w", err),
-			types.ErrorCodeDoRequestFailed,
-		), nil
-	}
-	defer audioResp.Body.Close()
+	// Directly redirect the client to the audio URL instead of streaming it, 
+	// saving bandwidth and matching minimax behavior
+	c.Redirect(http.StatusFound, audioURL)
 
-	if audioResp.StatusCode != http.StatusOK {
-		return types.NewError(
-			fmt.Errorf("TTS audio download failed: status %d", audioResp.StatusCode),
-			types.ErrorCodeDoRequestFailed,
-		), nil
-	}
-
-	// Determine content type from the audio response or default to wav
-	contentType := audioResp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "audio/wav"
-	}
-
-	// Stream the audio back to the client (OpenAI TTS compatible)
-	c.Writer.Header().Set("Content-Type", contentType)
-	c.Writer.WriteHeader(http.StatusOK)
-
-	written, err := io.Copy(c.Writer, audioResp.Body)
-	if err != nil {
-		logger.LogError(c, fmt.Sprintf("Ali TTS: error streaming audio: %v", err))
-	}
-
-	// Build usage based on characters
+	// Build usage based on characters for billing
 	usage := &dto.Usage{
-		PromptTokens:    aliResp.Usage.Characters,
-		CompletionTokens: int(written / 1000), // rough estimate: 1 token per KB
-		TotalTokens:     aliResp.Usage.Characters + int(written/1000),
+		PromptTokens:     aliResp.Usage.Characters,
+		CompletionTokens: 0,
+		TotalTokens:      aliResp.Usage.Characters,
 	}
 
 	return nil, usage
