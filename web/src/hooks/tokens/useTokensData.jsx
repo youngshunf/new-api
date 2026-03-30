@@ -29,9 +29,11 @@ import {
 } from '../../helpers';
 import { ITEMS_PER_PAGE } from '../../constants';
 import { useTableCompactMode } from '../common/useTableCompactMode';
-import { fetchTokenKey as fetchTokenKeyById } from '../../helpers/token';
+import { fetchTokenKey as fetchTokenKeyById, fetchTokenKeyAdmin as fetchTokenKeyByIdAdmin } from '../../helpers/token';
+import { isAdmin as checkIsAdmin } from '../../helpers/utils';
 
 export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
+  const isAdmin = checkIsAdmin();
   const { t } = useTranslation();
 
   // Basic state
@@ -64,6 +66,7 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
   const formInitValues = {
     searchKeyword: '',
     searchToken: '',
+    searchUsername: '',
   };
 
   // Get form values helper function
@@ -72,6 +75,7 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
     return {
       searchKeyword: formValues.searchKeyword || '',
       searchToken: formValues.searchToken || '',
+      searchUsername: formValues.searchUsername || '',
     };
   };
 
@@ -98,7 +102,8 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
   const loadTokens = async (page = 1, size = pageSize) => {
     setLoading(true);
     setSearchMode(false);
-    const res = await API.get(`/api/token/?p=${page}&size=${size}`);
+    const apiPath = isAdmin ? `/api/admin_token/?p=${page}&size=${size}` : `/api/token/?p=${page}&size=${size}`;
+    const res = await API.get(apiPath);
     const { success, message, data } = res.data;
     if (success) {
       syncPageData(data);
@@ -151,7 +156,8 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
     const request = (async () => {
       setLoadingTokenKeys((prev) => ({ ...prev, [tokenId]: true }));
       try {
-        const fullKey = await fetchTokenKeyById(tokenId);
+        const fetcher = isAdmin ? fetchTokenKeyByIdAdmin : fetchTokenKeyById;
+        const fullKey = await fetcher(tokenId);
         setResolvedTokenKeys((prev) => ({ ...prev, [tokenId]: fullKey }));
         return fullKey;
       } catch (error) {
@@ -252,28 +258,46 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
     setLoading(true);
     let data = { id };
     let res;
-    switch (action) {
-      case 'delete':
-        res = await API.delete(`/api/token/${id}/`);
-        break;
-      case 'enable':
-        data.status = 1;
-        res = await API.put('/api/token/?status_only=true', data);
-        break;
-      case 'disable':
-        data.status = 2;
-        res = await API.put('/api/token/?status_only=true', data);
-        break;
+    if (isAdmin) {
+      switch (action) {
+        case 'delete':
+          res = await API.delete(`/api/admin_token/${id}`);
+          break;
+        case 'enable':
+          data.status = 1;
+          res = await API.put('/api/admin_token/?status_only=true', data);
+          break;
+        case 'disable':
+          data.status = 2;
+          res = await API.put('/api/admin_token/?status_only=true', data);
+          break;
+      }
+    } else {
+      switch (action) {
+        case 'delete':
+          res = await API.delete(`/api/token/${id}/`);
+          break;
+        case 'enable':
+          data.status = 1;
+          res = await API.put('/api/token/?status_only=true', data);
+          break;
+        case 'disable':
+          data.status = 2;
+          res = await API.put('/api/token/?status_only=true', data);
+          break;
+      }
     }
     const { success, message } = res.data;
     if (success) {
       showSuccess(t('操作成功完成！'));
-      let token = res.data.data;
-      let newTokens = [...tokens];
-      if (action !== 'delete') {
+      if (action === 'delete') {
+        await refresh();
+      } else {
+        let token = res.data.data;
+        let newTokens = [...tokens];
         record.status = token.status;
+        setTokens(newTokens);
       }
-      setTokens(newTokens);
     } else {
       showError(message);
     }
@@ -286,16 +310,20 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
     const normalizedSize =
       Number.isInteger(size) && size > 0 ? size : pageSize;
 
-    const { searchKeyword, searchToken } = getFormValues();
-    if (searchKeyword === '' && searchToken === '') {
+    const { searchKeyword, searchToken, searchUsername } = getFormValues();
+    if (searchKeyword === '' && searchToken === '' && searchUsername === '') {
       setSearchMode(false);
       await loadTokens(1);
       return;
     }
     setSearching(true);
-    const res = await API.get(
-      `/api/token/search?keyword=${encodeURIComponent(searchKeyword)}&token=${encodeURIComponent(searchToken)}&p=${normalizedPage}&size=${normalizedSize}`,
-    );
+    let apiPath;
+    if (isAdmin) {
+      apiPath = `/api/admin_token/search?keyword=${encodeURIComponent(searchKeyword)}&token=${encodeURIComponent(searchToken)}&username=${encodeURIComponent(searchUsername)}&p=${normalizedPage}&size=${normalizedSize}`;
+    } else {
+      apiPath = `/api/token/search?keyword=${encodeURIComponent(searchKeyword)}&token=${encodeURIComponent(searchToken)}&p=${normalizedPage}&size=${normalizedSize}`;
+    }
+    const res = await API.get(apiPath);
     const { success, message, data } = res.data;
     if (success) {
       setSearchMode(true);
@@ -432,6 +460,7 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
     tokenCount,
     pageSize,
     searching,
+    isAdmin,
 
     // Selection state
     selectedKeys,

@@ -78,6 +78,93 @@ func (token *Token) GetIpLimits() []string {
 	return ipLimits
 }
 
+// TokenWithUsername 管理员查看令牌时，附带所属用户名
+type TokenWithUsername struct {
+	Token
+	Username string `json:"username" gorm:"column:username"`
+}
+
+// GetAllTokensAdmin 管理员查询所有令牌（带用户名），不限 user_id
+func GetAllTokensAdmin(startIdx int, num int) ([]*TokenWithUsername, error) {
+	var tokens []*TokenWithUsername
+	err := DB.Model(&Token{}).
+		Select("tokens.*, users.username").
+		Joins("LEFT JOIN users ON users.id = tokens.user_id").
+		Order("tokens.id desc").
+		Limit(num).Offset(startIdx).
+		Find(&tokens).Error
+	return tokens, err
+}
+
+// CountAllTokens 统计所有令牌总数（管理员用）
+func CountAllTokens() (int64, error) {
+	var total int64
+	err := DB.Model(&Token{}).Count(&total).Error
+	return total, err
+}
+
+// SearchAllTokensAdmin 管理员全局搜索令牌（按名称/密钥关键词），带用户名
+func SearchAllTokensAdmin(keyword string, token string, username string, offset int, limit int) (tokens []*TokenWithUsername, total int64, err error) {
+	if limit <= 0 || limit > searchHardLimit {
+		limit = searchHardLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	if token != "" {
+		token = strings.TrimPrefix(token, "sk-")
+	}
+
+	baseQuery := DB.Model(&Token{}).
+		Select("tokens.*, users.username").
+		Joins("LEFT JOIN users ON users.id = tokens.user_id")
+
+	if keyword != "" {
+		keywordPattern, err := sanitizeLikePattern(keyword)
+		if err != nil {
+			return nil, 0, err
+		}
+		baseQuery = baseQuery.Where("tokens.name LIKE ? ESCAPE '!'", keywordPattern)
+	}
+	if token != "" {
+		tokenPattern, err := sanitizeLikePattern(token)
+		if err != nil {
+			return nil, 0, err
+		}
+		baseQuery = baseQuery.Where("tokens."+commonKeyCol+" LIKE ? ESCAPE '!'", tokenPattern)
+	}
+	if username != "" {
+		baseQuery = baseQuery.Where("users.username LIKE ?", "%"+username+"%")
+	}
+
+	err = baseQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	err = baseQuery.Order("tokens.id desc").Offset(offset).Limit(limit).Find(&tokens).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return tokens, total, nil
+}
+
+// DeleteTokenByIdAdmin 管理员删除令牌，不需要校验 userId
+func DeleteTokenByIdAdmin(id int) error {
+	if id == 0 {
+		return errors.New("id 为空！")
+	}
+	token := Token{Id: id}
+	err := DB.First(&token, "id = ?", id).Error
+	if err != nil {
+		return err
+	}
+	return token.Delete()
+}
+
+// GetTokenById 已有，管理员可复用
+
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	var tokens []*Token
 	var err error

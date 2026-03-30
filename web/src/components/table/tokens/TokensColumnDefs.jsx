@@ -449,8 +449,25 @@ export const getTokensColumns = ({
   setEditingToken,
   setShowEdit,
   refresh,
+  isAdmin,
 }) => {
-  return [
+  const columns = [];
+
+  // 管理员模式：在最前面插入用户名列
+  if (isAdmin) {
+    columns.push({
+      title: t('用户名'),
+      dataIndex: 'username',
+      key: 'username',
+      render: (text) => (
+        <Tag color='blue' shape='circle' size='small'>
+          {text || '-'}
+        </Tag>
+      ),
+    });
+  }
+
+  columns.push(
     {
       title: t('名称'),
       dataIndex: 'name',
@@ -530,5 +547,7 @@ export const getTokensColumns = ({
           t,
         ),
     },
-  ];
+  );
+
+  return columns;
 };

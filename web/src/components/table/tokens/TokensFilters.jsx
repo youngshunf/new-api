@@ -27,6 +27,7 @@ const TokensFilters = ({
   searchTokens,
   loading,
   searching,
+  isAdmin,
   t,
 }) => {
   // Handle form reset and immediate search
@@ -56,6 +57,19 @@ const TokensFilters = ({
       className='w-full md:w-auto order-1 md:order-2'
     >
       <div className='flex flex-col md:flex-row items-center gap-2 w-full md:w-auto'>
+        {isAdmin && (
+          <div className='relative w-full md:w-44'>
+            <Form.Input
+              field='searchUsername'
+              prefix={<IconSearch />}
+              placeholder={t('用户名')}
+              showClear
+              pure
+              size='small'
+            />
+          </div>
+        )}
+
         <div className='relative w-full md:w-56'>
           <Form.Input
             field='searchKeyword'

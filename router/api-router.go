@@ -133,6 +133,18 @@ func SetApiRouter(router *gin.Engine) {
 			}
 		}
 
+		// Admin Token management routes (独立路由组，避免与 /api/user/token 冲突)
+		adminTokenRoute := apiRouter.Group("/admin_token")
+		adminTokenRoute.Use(middleware.AdminAuth())
+		{
+			adminTokenRoute.GET("/", controller.GetAllTokensAsAdmin)
+			adminTokenRoute.GET("/search", controller.SearchTokensAsAdmin)
+			adminTokenRoute.GET("/:id", controller.GetTokenAsAdmin)
+			adminTokenRoute.POST("/:id/key", controller.GetTokenKeyAsAdmin)
+			adminTokenRoute.PUT("/", controller.UpdateTokenAsAdmin)
+			adminTokenRoute.DELETE("/:id", controller.DeleteTokenAsAdmin)
+		}
+
 		// Subscription billing (plans, purchase, admin management)
 		subscriptionRoute := apiRouter.Group("/subscription")
 		subscriptionRoute.Use(middleware.UserAuth())

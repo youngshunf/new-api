@@ -334,3 +334,168 @@ func DeleteTokenBatch(c *gin.Context) {
 		"data":    count,
 	})
 }
+
+// ===================== 管理员令牌管理接口 =====================
+
+func buildMaskedAdminTokenResponse(token *model.TokenWithUsername) *model.TokenWithUsername {
+	if token == nil {
+		return nil
+	}
+	masked := *token
+	masked.Key = token.GetMaskedKey()
+	return &masked
+}
+
+func buildMaskedAdminTokenResponses(tokens []*model.TokenWithUsername) []*model.TokenWithUsername {
+	maskedTokens := make([]*model.TokenWithUsername, 0, len(tokens))
+	for _, token := range tokens {
+		maskedTokens = append(maskedTokens, buildMaskedAdminTokenResponse(token))
+	}
+	return maskedTokens
+}
+
+// GetAllTokensAsAdmin 管理员查看所有用户的令牌列表
+func GetAllTokensAsAdmin(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	tokens, err := model.GetAllTokensAdmin(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	total, _ := model.CountAllTokens()
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(buildMaskedAdminTokenResponses(tokens))
+	common.ApiSuccess(c, pageInfo)
+}
+
+// SearchTokensAsAdmin 管理员全局搜索令牌
+func SearchTokensAsAdmin(c *gin.Context) {
+	keyword := c.Query("keyword")
+	token := c.Query("token")
+	username := c.Query("username")
+	pageInfo := common.GetPageQuery(c)
+
+	tokens, total, err := model.SearchAllTokensAdmin(keyword, token, username, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(buildMaskedAdminTokenResponses(tokens))
+	common.ApiSuccess(c, pageInfo)
+}
+
+// DeleteTokenAsAdmin 管理员删除任意用户的令牌
+func DeleteTokenAsAdmin(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	err := model.DeleteTokenByIdAdmin(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+}
+
+// UpdateTokenAsAdmin 管理员更新任意用户的令牌
+func UpdateTokenAsAdmin(c *gin.Context) {
+	statusOnly := c.Query("status_only")
+	token := model.Token{}
+	err := c.ShouldBindJSON(&token)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if len(token.Name) > 50 {
+		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
+		return
+	}
+	if !token.UnlimitedQuota {
+		if token.RemainQuota < 0 {
+			common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
+			return
+		}
+		maxQuotaValue := int((1000000000 * common.QuotaPerUnit))
+		if token.RemainQuota > maxQuotaValue {
+			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
+			return
+		}
+	}
+	// 管理员直接通过 ID 获取，不校验 userId
+	cleanToken, err := model.GetTokenById(token.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if token.Status == common.TokenStatusEnabled {
+		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
+			common.ApiErrorI18n(c, i18n.MsgTokenExpiredCannotEnable)
+			return
+		}
+		if cleanToken.Status == common.TokenStatusExhausted && cleanToken.RemainQuota <= 0 && !cleanToken.UnlimitedQuota {
+			common.ApiErrorI18n(c, i18n.MsgTokenExhaustedCannotEable)
+			return
+		}
+	}
+	if statusOnly != "" {
+		cleanToken.Status = token.Status
+	} else {
+		cleanToken.Name = token.Name
+		cleanToken.ExpiredTime = token.ExpiredTime
+		cleanToken.RemainQuota = token.RemainQuota
+		cleanToken.UnlimitedQuota = token.UnlimitedQuota
+		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
+		cleanToken.ModelLimits = token.ModelLimits
+		cleanToken.AllowIps = token.AllowIps
+		cleanToken.Group = token.Group
+		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+	}
+	err = cleanToken.Update()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    buildMaskedTokenResponse(cleanToken),
+	})
+}
+
+// GetTokenKeyAsAdmin 管理员查看任意用户的令牌密钥
+func GetTokenKeyAsAdmin(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	token, err := model.GetTokenById(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"key": token.GetFullKey(),
+	})
+}
+
+// GetTokenAsAdmin 管理员获取任意用户的单个令牌详情
+func GetTokenAsAdmin(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	token, err := model.GetTokenById(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    buildMaskedTokenResponse(token),
+	})
+}

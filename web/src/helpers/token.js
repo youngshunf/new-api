@@ -34,6 +34,20 @@ export async function fetchTokenKey(tokenId) {
 }
 
 /**
+ * 管理员按需获取任意用户令牌的真实 key
+ * @param {number|string} tokenId
+ * @returns {Promise<string>} 返回不带 sk- 前缀的真实 token key
+ */
+export async function fetchTokenKeyAdmin(tokenId) {
+  const response = await API.post(`/api/admin_token/${tokenId}/key`);
+  const { success, data, message } = response.data || {};
+  if (!success || !data?.key) {
+    throw new Error(message || 'Failed to fetch token key');
+  }
+  return data.key;
+}
+
+/**
  * 获取可用的 token keys
  * @returns {Promise<string[]>} 返回 active 状态的不带 sk- 前缀的真实 token key 数组
  */

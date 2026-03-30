@@ -151,7 +151,10 @@ const EditTokenModal = (props) => {
 
   const loadToken = async () => {
     setLoading(true);
-    let res = await API.get(`/api/token/${props.editingToken.id}`);
+    const apiPath = props.isAdmin
+      ? `/api/admin_token/${props.editingToken.id}`
+      : `/api/token/${props.editingToken.id}`;
+    let res = await API.get(apiPath);
     const { success, message, data } = res.data;
     if (success) {
       if (data.expired_time !== -1) {
@@ -221,7 +224,8 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-      let res = await API.put(`/api/token/`, {
+      const updatePath = props.isAdmin ? `/api/admin_token/` : `/api/token/`;
+      let res = await API.put(updatePath, {
         ...localInputs,
         id: parseInt(props.editingToken.id),
       });
