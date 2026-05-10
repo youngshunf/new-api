@@ -12,6 +12,9 @@ web/dist
 .env
 one-api
 new-api
+new-api-linux-amd64
+new-api-linux-arm64
+new-api-darwin-*
 /__debug_bin*
 .DS_Store
 tiktoken_cache
