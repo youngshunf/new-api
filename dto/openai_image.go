@@ -27,7 +27,10 @@ type ImageRequest struct {
 	OutputCompression json.RawMessage `json:"output_compression,omitempty"`
 	PartialImages     json.RawMessage `json:"partial_images,omitempty"`
 	// Stream            bool            `json:"stream,omitempty"`
-	Watermark *bool `json:"watermark,omitempty"`
+	Images        json.RawMessage `json:"images,omitempty"`
+	Mask          json.RawMessage `json:"mask,omitempty"`
+	InputFidelity json.RawMessage `json:"input_fidelity,omitempty"`
+	Watermark     *bool           `json:"watermark,omitempty"`
 	// zhipu 4v
 	WatermarkEnabled json.RawMessage `json:"watermark_enabled,omitempty"`
 	UserId           json.RawMessage `json:"user_id,omitempty"`
@@ -148,15 +151,14 @@ func (i *ImageRequest) GetTokenCountMeta() *types.TokenCountMeta {
 		}
 	}
 
-	// not support token count for dalle
-	n := uint(1)
-	if i.N != nil {
-		n = *i.N
-	}
+	// n is NOT included here; it is handled via OtherRatio("n") in
+	// image_handler.go (default) or channel adaptors (actual count).
+	// Including n here caused double-counting for channels that also
+	// set OtherRatio("n") (e.g. Ali/Bailian).
 	return &types.TokenCountMeta{
 		CombineText:     i.Prompt,
 		MaxTokens:       1584,
-		ImagePriceRatio: sizeRatio * qualityRatio * float64(n),
+		ImagePriceRatio: sizeRatio * qualityRatio,
 	}
 }
 
