@@ -20,6 +20,7 @@ import {
   LayoutDashboard,
   Activity,
   Key,
+  KeyRound,
   FileText,
   Wallet,
   Box,
@@ -134,6 +135,11 @@ export function useSidebarData(): SidebarData {
             title: t('Users'),
             url: '/users',
             icon: Users,
+          },
+          {
+            title: t('Token Management'),
+            url: '/admin-tokens',
+            icon: KeyRound,
           },
           {
             title: t('Redemption Codes'),
