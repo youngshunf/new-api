@@ -22,7 +22,10 @@ var TopUpLink = ""
 var themeValue atomic.Value // stores string; safe for concurrent read/write
 
 func init() {
-	themeValue.Store("classic")
+	// huanxing: 默认 theme 改为 default（v1.0 新前端含 huanxing admin-tokens 等定制）。
+	// 真正生效点在 setting/system_setting/theme.go 的 themeSettings.Frontend；
+	// 这里保持一致仅是双保险。
+	themeValue.Store("default")
 }
 
 func GetTheme() string {
