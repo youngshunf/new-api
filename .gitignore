@@ -13,6 +13,8 @@ web/classic/dist
 web/node_modules
 web/dist
 .env
+.env.local
+.env.*.local
 one-api
 new-api
 new-api-linux-amd64
@@ -39,3 +41,5 @@ data/
 token_estimator_test.go
 skills-lock.json
 .playwright-mcp
+
+.codegraph/
