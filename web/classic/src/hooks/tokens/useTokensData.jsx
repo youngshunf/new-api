@@ -109,7 +109,9 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
   const loadTokens = async (page = 1, size = pageSize) => {
     setLoading(true);
     setSearchMode(false);
-    const apiPath = isAdmin ? `/api/admin_token/?p=${page}&size=${size}` : `/api/token/?p=${page}&size=${size}`;
+    const apiPath = isAdmin
+      ? `/api/admin_token/?p=${page}&size=${size}`
+      : `/api/token/?p=${page}&size=${size}`;
     const res = await API.get(apiPath);
     const { success, message, data } = res.data;
     if (success) {
@@ -331,8 +333,7 @@ export const useTokensData = (openFluentNotification, openCCSwitchModal) => {
   // Search tokens function
   const searchTokens = async (page = 1, size = pageSize) => {
     const normalizedPage = Number.isInteger(page) && page > 0 ? page : 1;
-    const normalizedSize =
-      Number.isInteger(size) && size > 0 ? size : pageSize;
+    const normalizedSize = Number.isInteger(size) && size > 0 ? size : pageSize;
 
     const { searchKeyword, searchToken, searchUsername } = getFormValues();
     if (searchKeyword === '' && searchToken === '' && searchUsername === '') {
