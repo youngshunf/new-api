@@ -64,6 +64,31 @@ interface SystemConfigState {
   setLoading: (loading: boolean) => void
 }
 
+const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
+  systemName: DEFAULT_SYSTEM_NAME,
+  logo: DEFAULT_LOGO,
+  currency: { ...DEFAULT_CURRENCY_CONFIG },
+}
+
+/**
+ * Sanitize a persisted (possibly stale or old-shaped) config back into a valid
+ * SystemConfig. Guards against `null`/partial values that would otherwise crash
+ * consumers reading `config.logo` etc. after rehydration.
+ */
+function sanitizeConfig(value: unknown): SystemConfig {
+  const persisted =
+    value && typeof value === 'object' ? (value as Partial<SystemConfig>) : {}
+  const persistedCurrency =
+    persisted.currency && typeof persisted.currency === 'object'
+      ? persisted.currency
+      : {}
+  return {
+    ...DEFAULT_SYSTEM_CONFIG,
+    ...persisted,
+    currency: { ...DEFAULT_CURRENCY_CONFIG, ...persistedCurrency },
+  }
+}
+
 /**
  * System configuration store with automatic persistence
  * Manages system name, logo, footer HTML and loading states
@@ -71,11 +96,7 @@ interface SystemConfigState {
 export const useSystemConfigStore = create<SystemConfigState>()(
   persist(
     (set) => ({
-      config: {
-        systemName: DEFAULT_SYSTEM_NAME,
-        logo: DEFAULT_LOGO,
-        currency: { ...DEFAULT_CURRENCY_CONFIG },
-      },
+      config: { ...DEFAULT_SYSTEM_CONFIG },
       loading: true,
       loadedLogoUrl: DEFAULT_LOGO,
       setConfig: (newConfig) =>
@@ -98,6 +119,24 @@ export const useSystemConfigStore = create<SystemConfigState>()(
         config: state.config,
         loadedLogoUrl: state.loadedLogoUrl,
       }),
+      // Persisted localStorage is untrusted: an old/partial/null `config` from a
+      // previous build must not override the safe defaults (would crash
+      // consumers reading `config.logo`). Sanitize on rehydration.
+      merge: (persisted, current) => {
+        const persistedState =
+          persisted && typeof persisted === 'object'
+            ? (persisted as Partial<SystemConfigState>)
+            : {}
+        return {
+          ...current,
+          ...persistedState,
+          config: sanitizeConfig(persistedState.config),
+          loadedLogoUrl:
+            typeof persistedState.loadedLogoUrl === 'string'
+              ? persistedState.loadedLogoUrl
+              : current.loadedLogoUrl,
+        }
+      },
     }
   )
 )
