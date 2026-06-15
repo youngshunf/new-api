@@ -30,11 +30,6 @@ export function AdminTokens() {
         <SectionPageLayout.Title>
           {t('Token Management')}
         </SectionPageLayout.Title>
-        <SectionPageLayout.Description>
-          {t(
-            'Manage API tokens issued to all users. Search by username, name or token key.'
-          )}
-        </SectionPageLayout.Description>
         <SectionPageLayout.Content>
           <AdminTokensTable />
         </SectionPageLayout.Content>
