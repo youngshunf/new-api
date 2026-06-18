@@ -9,10 +9,10 @@ type ThemeSettings struct {
 	Frontend string `json:"frontend"`
 }
 
-// huanxing: 默认 theme 改为 default（v1.0 新前端，含 huanxing admin-tokens 等定制）。
-// 已持久化 theme.frontend = "classic" 的现网会通过 model/option.go:585 的 DB 加载覆盖回 classic，不影响已部署实例。
+// huanxing: 默认 theme 设为 classic（classic 前端同样含 huanxing admin-tokens 等定制）。
+// 已持久化 theme.frontend 的现网会通过 model/option.go:585 的 DB 加载覆盖回各自值，不影响已部署实例。
 var themeSettings = ThemeSettings{
-	Frontend: "default",
+	Frontend: "classic",
 }
 
 func init() {
