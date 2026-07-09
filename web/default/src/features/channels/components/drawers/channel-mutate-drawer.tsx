@@ -16,15 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  type ReactNode,
-  useEffect,
-  useState,
-  useMemo,
-  useCallback,
-  useRef,
-} from 'react'
-import { type SubmitErrorHandler, useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -33,6 +24,7 @@ import {
   Boxes,
   CheckCircle2,
   Circle,
+  ClipboardPaste,
   HelpCircle,
   KeyRound,
   Loader2,
@@ -51,6 +43,15 @@ import {
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react'
+import {
+  type ReactNode,
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react'
+import { type SubmitErrorHandler, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -115,6 +116,10 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import {
+  parseChannelConnectionInfo,
+  type ChannelConnectionInfo,
+} from '@/lib/channel-connection-info'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
@@ -626,6 +631,8 @@ export function ChannelMutateDrawer({
   const [paramOverrideEditorOpen, setParamOverrideEditorOpen] = useState(false)
   const [advancedCustomEditorOpen, setAdvancedCustomEditorOpen] =
     useState(false)
+  const [clipboardConnectionInfo, setClipboardConnectionInfo] =
+    useState<ChannelConnectionInfo | null>(null)
 
   const isEditing = Boolean(currentRow)
   const channelId = currentRow?.id ?? null
@@ -729,9 +736,7 @@ export function ChannelMutateDrawer({
   const currentAllowServiceTier = form.watch('allow_service_tier')
   const currentDisableStore = form.watch('disable_store')
   const currentAllowSafetyIdentifier = form.watch('allow_safety_identifier')
-  const currentAllowIncludeObfuscation = form.watch(
-    'allow_include_obfuscation'
-  )
+  const currentAllowIncludeObfuscation = form.watch('allow_include_obfuscation')
   const currentAllowInferenceGeo = form.watch('allow_inference_geo')
   const currentAllowSpeed = form.watch('allow_speed')
   const currentClaudeBetaQuery = form.watch('claude_beta_query')
@@ -758,6 +763,67 @@ export function ChannelMutateDrawer({
       resetDoubaoApiUnlock()
     }
   }, [open, resetDoubaoApiUnlock])
+
+  const applyConnectionInfo = useCallback(
+    (connectionInfo: ChannelConnectionInfo) => {
+      form.setValue('key', connectionInfo.key, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+      form.setValue('base_url', connectionInfo.url, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+      setClipboardConnectionInfo(null)
+      toast.success(t('Connection info filled in'))
+    },
+    [form, t]
+  )
+
+  const pasteConnectionInfoFromClipboard = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) {
+      toast.error(t('Unable to read clipboard'))
+      return
+    }
+
+    try {
+      const text = await navigator.clipboard.readText()
+      const parsed = parseChannelConnectionInfo(text)
+      if (parsed) {
+        applyConnectionInfo(parsed)
+        return
+      }
+      toast.info(t('No connection info found in clipboard'))
+    } catch {
+      toast.error(t('Unable to read clipboard'))
+    }
+  }, [applyConnectionInfo, t])
+
+  useEffect(() => {
+    if (!open || isEditing) {
+      setClipboardConnectionInfo(null)
+      return
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) {
+      return
+    }
+
+    let cancelled = false
+    void navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (cancelled) return
+        setClipboardConnectionInfo(parseChannelConnectionInfo(text))
+      })
+      .catch(() => {
+        /* Clipboard detection is best-effort on drawer open. */
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isEditing, open])
 
   // Helper computed values
   const isBatchMode =
@@ -912,56 +978,56 @@ export function ChannelMutateDrawer({
   const advancedSummary = advancedHaveErrors ? t('Error') : undefined
   const routingStrategyConfigured = Boolean(
     currentPriority ||
-      currentWeight ||
-      currentTestModel?.trim() ||
-      (currentAutoBan ?? 1) !== 1
+    currentWeight ||
+    currentTestModel?.trim() ||
+    (currentAutoBan ?? 1) !== 1
   )
   const internalNotesConfigured = Boolean(
     currentTag?.trim() || currentRemark?.trim()
   )
   const overrideRulesConfigured = Boolean(
     hasConfiguredOverrideValue(currentStatusCodeMapping) ||
-      hasConfiguredOverrideValue(currentParamOverride) ||
-      hasConfiguredOverrideValue(currentHeaderOverride)
+    hasConfiguredOverrideValue(currentParamOverride) ||
+    hasConfiguredOverrideValue(currentHeaderOverride)
   )
   const extraSettingsConfigured = Boolean(
     currentForceFormat ||
-      currentThinkingToContent ||
-      currentPassThroughBodyEnabled ||
-      currentDisableTaskPollingSleep ||
-      currentProxy?.trim() ||
-      currentSystemPrompt?.trim() ||
-      currentSystemPromptOverride
+    currentThinkingToContent ||
+    currentPassThroughBodyEnabled ||
+    currentDisableTaskPollingSleep ||
+    currentProxy?.trim() ||
+    currentSystemPrompt?.trim() ||
+    currentSystemPromptOverride
   )
   let fieldPassthroughConfigured = false
-  if (currentType === 1) {
+  if (currentType === 1 || currentType === 57) {
     fieldPassthroughConfigured = Boolean(
       currentAllowServiceTier ||
-        currentDisableStore ||
-        currentAllowSafetyIdentifier ||
-        currentAllowIncludeObfuscation ||
-        currentAllowInferenceGeo
+      currentDisableStore ||
+      currentAllowSafetyIdentifier ||
+      currentAllowIncludeObfuscation ||
+      currentAllowInferenceGeo
     )
   } else if (currentType === 14) {
     fieldPassthroughConfigured = Boolean(
       currentAllowServiceTier ||
-        currentAllowInferenceGeo ||
-        currentAllowSpeed ||
-        currentClaudeBetaQuery
+      currentAllowInferenceGeo ||
+      currentAllowSpeed ||
+      currentClaudeBetaQuery
     )
   }
   const upstreamModelDetectionConfigured = Boolean(
     upstreamModelUpdateCheckEnabled ||
-      currentUpstreamModelUpdateAutoSyncEnabled ||
-      currentUpstreamModelUpdateIgnoredModels?.trim()
+    currentUpstreamModelUpdateAutoSyncEnabled ||
+    currentUpstreamModelUpdateIgnoredModels?.trim()
   )
   const advancedConfigured = Boolean(
     routingStrategyConfigured ||
-      internalNotesConfigured ||
-      overrideRulesConfigured ||
-      extraSettingsConfigured ||
-      fieldPassthroughConfigured ||
-      upstreamModelDetectionConfigured
+    internalNotesConfigured ||
+    overrideRulesConfigured ||
+    extraSettingsConfigured ||
+    fieldPassthroughConfigured ||
+    upstreamModelDetectionConfigured
   )
   const advancedNavChildren: ChannelEditorNavChildItem[] = [
     {
@@ -985,7 +1051,7 @@ export function ChannelMutateDrawer({
       configured: extraSettingsConfigured,
     },
   ]
-  if (currentType === 1 || currentType === 14) {
+  if (currentType === 1 || currentType === 14 || currentType === 57) {
     advancedNavChildren.push({
       id: ADVANCED_SETTINGS_SECTION_IDS.fieldPassthrough,
       title: t('Field passthrough controls'),
@@ -1743,6 +1809,7 @@ export function ChannelMutateDrawer({
         setActiveEditorSectionId(CHANNEL_EDITOR_SECTION_IDS.identity)
         setExpandedEditorNavItemId(undefined)
         setAdvancedSettingsOpen(false)
+        setClipboardConnectionInfo(null)
       }
     },
     [onOpenChange, form]
@@ -1753,26 +1820,42 @@ export function ChannelMutateDrawer({
       <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent className={sideDrawerContentClassName('sm:max-w-5xl')}>
           <SheetHeader className={sideDrawerHeaderClassName()}>
-            <SheetTitle className='flex items-center gap-3'>
-              <span className='bg-muted flex size-9 shrink-0 items-center justify-center rounded-md'>
-                <ChannelTypeLogo type={currentType} size={22} />
-              </span>
-              <span>
-                {isEditing ? t('Edit Channel') : t('Create Channel')}
-                <span className='text-muted-foreground ml-2 text-sm font-normal'>
-                  {t(currentTypeLabel)}
-                </span>
-              </span>
-            </SheetTitle>
-            <SheetDescription>
-              {isEditing
-                ? t(
-                    "Update channel configuration and click save when you're done."
-                  )
-                : t(
-                    'Add a new channel by providing the necessary information.'
-                  )}
-            </SheetDescription>
+            <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+              <div className='min-w-0'>
+                <SheetTitle className='flex items-center gap-3'>
+                  <span className='bg-muted flex size-9 shrink-0 items-center justify-center rounded-md'>
+                    <ChannelTypeLogo type={currentType} size={22} />
+                  </span>
+                  <span>
+                    {isEditing ? t('Edit Channel') : t('Create Channel')}
+                    <span className='text-muted-foreground ml-2 text-sm font-normal'>
+                      {t(currentTypeLabel)}
+                    </span>
+                  </span>
+                </SheetTitle>
+                <SheetDescription className='mt-1'>
+                  {isEditing
+                    ? t(
+                        "Update channel configuration and click save when you're done."
+                      )
+                    : t(
+                        'Add a new channel by providing the necessary information.'
+                      )}
+                </SheetDescription>
+              </div>
+              {!isEditing && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  className='shrink-0'
+                  onClick={pasteConnectionInfoFromClipboard}
+                >
+                  <ClipboardPaste className='size-4' />
+                  <span>{t('Paste Connection Info')}</span>
+                </Button>
+              )}
+            </div>
           </SheetHeader>
 
           {sensitiveLocked && (
@@ -1784,6 +1867,31 @@ export function ChannelMutateDrawer({
                 {t(
                   'You can still edit non-sensitive operations fields such as models, groups, priority, and weight.'
                 )}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {!isEditing && clipboardConnectionInfo && (
+            <Alert>
+              <AlertDescription className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+                <span>{t('Connection info detected in clipboard')}</span>
+                <span className='flex shrink-0 gap-2'>
+                  <Button
+                    type='button'
+                    size='sm'
+                    onClick={() => applyConnectionInfo(clipboardConnectionInfo)}
+                  >
+                    {t('Fill in')}
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    onClick={() => setClipboardConnectionInfo(null)}
+                  >
+                    {t('Ignore')}
+                  </Button>
+                </span>
               </AlertDescription>
             </Alert>
           )}
@@ -2674,14 +2782,18 @@ export function ChannelMutateDrawer({
                                               </Badge>
                                             )
                                           )}
-                                          {hiddenAdvancedCustomRouteTypeCount > 0 && (
+                                          {hiddenAdvancedCustomRouteTypeCount >
+                                            0 && (
                                             <Badge
                                               variant='outline'
                                               title={
                                                 advancedCustomRouteTypeTitle
                                               }
                                             >
-                                              +{hiddenAdvancedCustomRouteTypeCount}
+                                              +
+                                              {
+                                                hiddenAdvancedCustomRouteTypeCount
+                                              }
                                             </Badge>
                                           )}
                                           {!advancedCustomStats.valid && (
@@ -4104,7 +4216,9 @@ export function ChannelMutateDrawer({
                           </fieldset>
                         </div>
 
-                        {(currentType === 1 || currentType === 14) && (
+                        {(currentType === 1 ||
+                          currentType === 14 ||
+                          currentType === 57) && (
                           <div
                             id={ADVANCED_SETTINGS_SECTION_IDS.fieldPassthrough}
                             className={sideDrawerSectionClassName(
@@ -4116,9 +4230,7 @@ export function ChannelMutateDrawer({
                           >
                             <CardHeading
                               title={t('Field passthrough controls')}
-                              icon={
-                                <SlidersHorizontal className='h-4 w-4' />
-                              }
+                              icon={<SlidersHorizontal className='h-4 w-4' />}
                             />
                             <fieldset
                               disabled={sensitiveLocked}
@@ -4150,7 +4262,7 @@ export function ChannelMutateDrawer({
                                   )}
                                 />
 
-                                {currentType === 1 && (
+                                {(currentType === 1 || currentType === 57) && (
                                   <>
                                     <FormField
                                       control={form.control}
