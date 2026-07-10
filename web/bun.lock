@@ -323,6 +323,10 @@
 
     "@lit/reactive-element": ["@lit/reactive-element@2.1.2", "https://registry.npmmirror.com/@lit/reactive-element/-/reactive-element-2.1.2.tgz", { "dependencies": { "@lit-labs/ssr-dom-shim": "^1.5.0" } }, "sha512-pbCDiVMnne1lYUIaYNN5wrwQXDtHaYtg7YEFPeW+hws6U47WeFvISGUWekPGKWOP1ygrs0ef0o1VJMk1exos5A=="],
 
+    "@lobehub/emojilib": ["@lobehub/emojilib@1.0.0", "https://registry.npmmirror.com/@lobehub/emojilib/-/emojilib-1.0.0.tgz", {}, "sha512-s9KnjaPjsEefaNv150G3aifvB+J3P4eEKG+epY9zDPS2BeB6+V2jELWqAZll+nkogMaVovjEE813z3V751QwGw=="],
+
+    "@lobehub/fluent-emoji": ["@lobehub/fluent-emoji@4.1.0", "https://registry.npmmirror.com/@lobehub/fluent-emoji/-/fluent-emoji-4.1.0.tgz", { "dependencies": { "@lobehub/emojilib": "^1.0.0", "antd-style": "^4.1.0", "emoji-regex": "^10.6.0", "es-toolkit": "^1.43.0", "lucide-react": "^0.562.0", "url-join": "^5.0.0" }, "peerDependencies": { "react": "^19.0.0", "react-dom": "^19.0.0" } }, "sha512-R1MB2lfUkDvB7XAQdRzY75c1dx/tB7gEvBPaEEMarzKfCJWmXm7rheS6caVzmgwAlq5sfmTbxPL+un99sp//Yw=="],
+
     "@lobehub/icons": ["@lobehub/icons@5.10.1", "https://registry.npmmirror.com/@lobehub/icons/-/icons-5.10.1.tgz", { "dependencies": { "antd-style": "^4.1.0", "es-toolkit": "^1.45.1", "lucide-react": "^0.469.0", "polished": "^4.3.1" }, "peerDependencies": { "@lobehub/ui": "^5.0.0", "antd": "^6.1.1", "react": "^19.0.0", "react-dom": "^19.0.0" } }, "sha512-KMaE+YqPAXuA8gcmzBFefLa9KgCqmJy9Mg3tlGedrL2coAzCQeps+aqivjejHNMnCDTPnGb+OHvX1um2kT1lQw=="],
 
     "@lobehub/ui": ["@lobehub/ui@5.20.0", "https://registry.npmmirror.com/@lobehub/ui/-/ui-5.20.0.tgz", { "dependencies": { "@ant-design/cssinjs": "^2.1.2", "@base-ui/react": "^1.6.0", "@dnd-kit/core": "^6.3.1", "@dnd-kit/modifiers": "^9.0.0", "@dnd-kit/sortable": "^10.0.0", "@dnd-kit/utilities": "^3.2.2", "@emoji-mart/data": "^1.2.1", "@emoji-mart/react": "^1.1.1", "@emotion/is-prop-valid": "^1.4.0", "@floating-ui/react": "^0.27.19", "@giscus/react": "^3.1.0", "@mdx-js/mdx": "^3.1.1", "@mdx-js/react": "^3.1.1", "@pierre/diffs": "1.2.8", "@radix-ui/react-slot": "^1.2.5", "@shikijs/core": "^4.2.0", "@shikijs/transformers": "^4.2.0", "@splinetool/runtime": "0.9.526", "ahooks": "^3.9.7", "antd-style": "^4.1.0", "chroma-js": "^3.2.0", "class-variance-authority": "^0.7.1", "clsx": "^2.1.1", "dayjs": "^1.11.21", "emoji-mart": "^5.6.0", "es-toolkit": "^1.47.0", "fast-deep-equal": "^3.1.3", "hast-util-to-jsx-runtime": "^2.3.6", "html-url-attributes": "^3.0.1", "immer": "^11.1.8", "katex": "^0.16.47", "leva": "^0.10.1", "lucide-react": "^1.17.0", "marked": "^17.0.6", "mermaid": "^11.15.0", "motion": "^12.40.0", "numeral": "^2.0.6", "polished": "^4.3.1", "query-string": "^9.4.0", "rc-collapse": "^4.0.0", "rc-footer": "^0.6.8", "rc-image": "^7.12.0", "rc-input-number": "^9.5.0", "rc-menu": "^9.16.1", "re-resizable": "^6.11.2", "react-avatar-editor": "^15.1.0", "react-error-boundary": "^6.1.2", "react-hotkeys-hook": "^5.3.2", "react-markdown": "^10.1.0", "react-merge-refs": "^3.0.2", "react-rnd": "^10.5.3", "react-zoom-pan-pinch": "^3.7.0", "rehype-github-alerts": "^4.2.0", "rehype-katex": "^7.0.1", "rehype-raw": "^7.0.0", "remark-breaks": "^4.0.0", "remark-cjk-friendly": "^2.0.1", "remark-gfm": "^4.0.1", "remark-github": "^12.0.0", "remark-math": "^6.0.0", "remark-parse": "^11.0.0", "remark-rehype": "^11.1.2", "remend": "^1.3.0", "shiki": "^4.2.0", "shiki-stream": "^0.1.5", "swr": "^2.4.1", "ts-md5": "^2.0.1", "unified": "^11.0.5", "url-join": "^5.0.0", "use-merge-value": "^1.2.0", "uuid": "^13.0.2", "vfile": "^6.0.3", "virtua": "^0.49.1" }, "peerDependencies": { "@lobehub/fluent-emoji": "^4.0.0", "@lobehub/icons": "^5.0.0", "antd": "^6.1.1", "react": "^19.0.0", "react-dom": "^19.0.0" } }, "sha512-+PAkXgoffx6sivQSx+z/ez2sTjRdj7n6h1l54tlaxBSLrHieHihhqGu/XbkMml2sZQMbZxfCTFNm440Bl6V+PA=="],
@@ -1837,7 +1841,7 @@
 
     "minimatch": ["minimatch@10.2.5", "https://registry.npmmirror.com/minimatch/-/minimatch-10.2.5.tgz", { "dependencies": { "brace-expansion": "^5.0.5" } }, "sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg=="],
 
-    "minimist": ["minimist@1.2.6", "https://registry.npmmirror.com/minimist/-/minimist-1.2.6.tgz", {}, "sha512-Jsjnk4bw3YJqYzbdyBiNsPWHPfO++UGG749Cxs6peCu5Xg4nrena6OVxOYxrQTqww0Jmwt+Ref8rggumkTLz9Q=="],
+    "minimist": ["minimist@1.2.8", "https://registry.npmmirror.com/minimist/-/minimist-1.2.8.tgz", {}, "sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA=="],
 
     "mixin-deep": ["mixin-deep@1.3.2", "https://registry.npmmirror.com/mixin-deep/-/mixin-deep-1.3.2.tgz", { "dependencies": { "for-in": "^1.0.2", "is-extendable": "^1.0.1" } }, "sha512-WRoDn//mXBiJ1H40rqa3vH0toePwSsGb45iInWlTySa+Uu4k3tYUSxa2v1KqAiLtvlrSzaExqS1gtk96A9zvEA=="],
 
@@ -2433,6 +2437,8 @@
 
     "@emotion/serialize/@emotion/unitless": ["@emotion/unitless@0.10.0", "https://registry.npmmirror.com/@emotion/unitless/-/unitless-0.10.0.tgz", {}, "sha512-dFoMUuQA20zvtVTuxZww6OHoJYgrzfKM1t52mVySDJnMSEa08ruEvdYQbhvyu6soU+NeLVd3yKfTfT0NeV6qGg=="],
 
+    "@lobehub/fluent-emoji/lucide-react": ["lucide-react@0.562.0", "https://registry.npmmirror.com/lucide-react/-/lucide-react-0.562.0.tgz", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-82hOAu7y0dbVuFfmO4bYF1XEwYk/mEbM5E+b1jgci/udUBEE/R7LF5Ip0CCEmXe8AybRM8L+04eP+LGZeDvkiw=="],
+
     "@lobehub/icons/lucide-react": ["lucide-react@0.469.0", "https://registry.npmmirror.com/lucide-react/-/lucide-react-0.469.0.tgz", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-28vvUnnKQ/dBwiCQtwJw7QauYnE7yd2Cyp4tTTJpvglX4EMpbflcdBgrgToX2j71B3YvugK/NH3BGUk+E/p/Fw=="],
 
     "@lobehub/ui/katex": ["katex@0.16.47", "https://registry.npmmirror.com/katex/-/katex-0.16.47.tgz", { "dependencies": { "commander": "^8.3.0" }, "bin": { "katex": "cli.js" } }, "sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg=="],
@@ -2580,6 +2586,8 @@
     "shapefile/commander": ["commander@2.20.3", "https://registry.npmmirror.com/commander/-/commander-2.20.3.tgz", {}, "sha512-GpVkmM8vF2vQUkj2LvZmD35JxeJOLCwJ9cUkugyk2nuhbv3+mJvpLYYt+0+USMxE+oj+ey/lJEnhZw75x/OMcQ=="],
 
     "simplify-geojson/concat-stream": ["concat-stream@1.4.11", "https://registry.npmmirror.com/concat-stream/-/concat-stream-1.4.11.tgz", { "dependencies": { "inherits": "~2.0.1", "readable-stream": "~1.1.9", "typedarray": "~0.0.5" } }, "sha512-X3JMh8+4je3U1cQpG87+f9lXHDrqcb2MVLg9L7o8b1UZ0DzhRrUpdn65ttzu10PpJPPI3MQNkis+oha6TSA9Mw=="],
+
+    "simplify-geojson/minimist": ["minimist@1.2.6", "https://registry.npmmirror.com/minimist/-/minimist-1.2.6.tgz", {}, "sha512-Jsjnk4bw3YJqYzbdyBiNsPWHPfO++UGG749Cxs6peCu5Xg4nrena6OVxOYxrQTqww0Jmwt+Ref8rggumkTLz9Q=="],
 
     "split-string/extend-shallow": ["extend-shallow@3.0.2", "https://registry.npmmirror.com/extend-shallow/-/extend-shallow-3.0.2.tgz", { "dependencies": { "assign-symbols": "^1.0.0", "is-extendable": "^1.0.1" } }, "sha512-BwY5b5Ql4+qZoefgMj2NUmx+tehVTH/Kf4k1ZEtOHNFcm2wSxMRo992l6X3TIgni2eZVTZ85xMOjF31fwZAj6Q=="],
 
