@@ -166,3 +166,78 @@ func GetCreditConsumptionSummary(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, summary)
 }
+
+// GetCreditUsage 返回某用户的消费流水（积分口径，已分页）。
+//
+// Cloud 过去自己维护 credit_transaction 流水表并自行把 quota 换算成积分，
+// 于是「扣了多少」在两侧各有一套算法。doc94 D1 起流水只有这一个来源，
+// 金额由 NewAPI 换算成积分字符串，Cloud 原样透传。
+//
+// GET /api/internal/v1/credit-usage/{newapi_user_id}?start=&end=&page=&size=
+func GetCreditUsage(c *gin.Context) {
+	userId, ok := parseInternalUserId(c)
+	if !ok {
+		return
+	}
+	start := parseInt64Query(c, "start")
+	end := parseInt64Query(c, "end")
+	page, _ := strconv.Atoi(c.Query("page"))
+	size, _ := strconv.Atoi(c.Query("size"))
+
+	result, err := model.ListCreditUsage(userId, start, end, page, size)
+	if err != nil {
+		logger.LogWarn(c, fmt.Sprintf("list credit usage failed user=%d: %s", userId, err.Error()))
+		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+			err.Error(), true)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// GetCreditUsageDaily 返回按本地日聚合的消费（积分口径）。
+//
+// tz_offset_minutes 由调用方给出（Asia/Shanghai 为 480）：日边界必须由展示时区决定，
+// 否则云端和 NewAPI 会各切各的日，同一笔消费出现在两个不同的日期上。
+//
+// GET /api/internal/v1/credit-usage/{newapi_user_id}/daily?start=&end=&tz_offset_minutes=
+func GetCreditUsageDaily(c *gin.Context) {
+	userId, ok := parseInternalUserId(c)
+	if !ok {
+		return
+	}
+	tzOffset, err := strconv.Atoi(c.DefaultQuery("tz_offset_minutes", "0"))
+	if err != nil || tzOffset < -720 || tzOffset > 840 {
+		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+			"tz_offset_minutes must be an integer within [-720, 840]", false)
+		return
+	}
+
+	result, summaryErr := model.SummarizeCreditUsageDaily(userId, parseInt64Query(c, "start"), parseInt64Query(c, "end"), tzOffset)
+	if summaryErr != nil {
+		logger.LogWarn(c, fmt.Sprintf("summarize daily usage failed user=%d: %s", userId, summaryErr.Error()))
+		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+			summaryErr.Error(), true)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// parseInternalUserId 解析路径上的 newapi_user_id；非法时已经写好 400 响应并返回 false。
+func parseInternalUserId(c *gin.Context) (int, bool) {
+	userId, err := strconv.Atoi(strings.TrimSpace(c.Param("newapi_user_id")))
+	if err != nil || userId <= 0 {
+		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+			"newapi_user_id must be a positive integer", false)
+		return 0, false
+	}
+	return userId, true
+}
+
+// parseInt64Query 读可选的 Unix 秒查询参数；缺失或非法一律按 0（不限）处理。
+func parseInt64Query(c *gin.Context, key string) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(c.Query(key)), 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}

@@ -20,6 +20,8 @@ func SetInternalRouter(router *gin.Engine) {
 		internalRouter.PUT("/credit-operations/:event_id", controller.PutCreditOperation)
 		internalRouter.GET("/credit-operations/:event_id", controller.GetCreditOperation)
 		internalRouter.GET("/credit-accounts/:newapi_user_id", controller.GetCreditAccount)
+		internalRouter.GET("/credit-usage/:newapi_user_id", controller.GetCreditUsage)
+		internalRouter.GET("/credit-usage/:newapi_user_id/daily", controller.GetCreditUsageDaily)
 		// 仅供 doc94 R1 一次性存量 rebase 使用；迁移完成后连同工具一并删除。
 		internalRouter.GET("/credit-consumption/:newapi_user_id", controller.GetCreditConsumptionSummary)
 	}
