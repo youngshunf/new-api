@@ -140,3 +140,29 @@ func GetCreditAccount(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, account)
 }
+
+// GetCreditConsumptionSummary 返回某个用户历史消费的资金池拆分汇总。
+//
+// 仅供 doc94 R1 的一次性存量余额 rebase 使用：Cloud 与 NewAPI 的库已解耦，
+// 重建基线所需的「真实消费」只能由 NewAPI 这个消费权威给出。
+//
+// 汇总把「拆得出来的」和「拆不出来的」分开返回，无法归因时 determinate=false，
+// 由调用方把该用户放进人工清单——这里绝不按比例摊派或猜测来源。
+//
+// GET /api/internal/v1/credit-consumption/{newapi_user_id}
+func GetCreditConsumptionSummary(c *gin.Context) {
+	userId, err := strconv.Atoi(strings.TrimSpace(c.Param("newapi_user_id")))
+	if err != nil || userId <= 0 {
+		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+			"newapi_user_id must be a positive integer", false)
+		return
+	}
+	summary, summaryErr := model.SummarizeCreditConsumption(userId)
+	if summaryErr != nil {
+		logger.LogWarn(c, fmt.Sprintf("summarize consumption failed user=%d: %s", userId, summaryErr.Error()))
+		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+			summaryErr.Error(), true)
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
