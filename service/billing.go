@@ -12,6 +12,9 @@ import (
 const (
 	BillingSourceWallet       = "wallet"
 	BillingSourceSubscription = "subscription"
+	// BillingSourceComposite 表示本次请求同时扣了订阅池与永久钱包。
+	// 拆分明细在 relayInfo.FundingSubscriptionPart / FundingWalletPart 上。
+	BillingSourceComposite = "composite"
 )
 
 // PreConsumeBilling 根据用户计费偏好创建 BillingSession 并执行预扣费。
@@ -58,9 +61,9 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 			return err
 		}
 
-		// 发送额度通知（订阅计费使用订阅剩余额度）
+		// 发送额度通知（动了订阅池就按订阅剩余额度提示）
 		if actualQuota != 0 {
-			if relayInfo.BillingSource == BillingSourceSubscription {
+			if relayInfo.BillingSource == BillingSourceSubscription || relayInfo.BillingSource == BillingSourceComposite {
 				checkAndSendSubscriptionQuotaNotify(relayInfo)
 			} else {
 				checkAndSendQuotaNotify(relayInfo, actualQuota-preConsumed, preConsumed)

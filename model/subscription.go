@@ -33,6 +33,31 @@ const (
 	SubscriptionResetCustom  = "custom"
 )
 
+// 订阅投影状态。
+// scheduled 是「已购买但尚未生效」的未来合同：它不参与预扣，
+// 直到 start_time 到达后由维护任务原子切换为 active。
+const (
+	SubscriptionStatusScheduled = "scheduled"
+	SubscriptionStatusActive    = "active"
+	SubscriptionStatusExpired   = "expired"
+	SubscriptionStatusCancelled = "cancelled"
+)
+
+// SubscriptionSourceCloudContract 标记由 Cloud 履约事件创建的外部合同投影。
+// 这类投影自带周期参数（cycle_seconds/cycle_count），不依赖本地 subscription_plan。
+const SubscriptionSourceCloudContract = "cloud_contract"
+
+// activeSubscriptionWindow 是「此刻真实可用的订阅投影」的统一过滤条件，
+// 占位符依次为 status、now、now。三处语义必须一起成立：
+//   - status = active：scheduled（未来合同）与 expired 都不可用；
+//   - start_time <= now：已购买但尚未生效的合同不得被提前消费；
+//   - end_time = 0 OR end_time > now：end_time = 0 表示免费档无商业到期。
+const activeSubscriptionWindow = "status = ? AND start_time <= ? AND (end_time = 0 OR end_time > ?)"
+
+// perpetualLastOrdering 让有到期日的订阅先被消耗，无到期日的免费档兜底在后。
+// CASE WHEN 在 SQLite / MySQL / PostgreSQL 三端语法一致。
+const perpetualLastOrdering = "CASE WHEN end_time = 0 THEN 1 ELSE 0 END asc, end_time asc, id asc"
+
 var (
 	ErrSubscriptionOrderNotFound      = errors.New("subscription order not found")
 	ErrSubscriptionOrderStatusInvalid = errors.New("subscription order status invalid")
@@ -260,9 +285,21 @@ type UserSubscription struct {
 
 	StartTime int64  `json:"start_time" gorm:"bigint"`
 	EndTime   int64  `json:"end_time" gorm:"bigint;index;index:idx_user_sub_active,priority:3"`
-	Status    string `json:"status" gorm:"type:varchar(32);index;index:idx_user_sub_active,priority:2"` // active/expired/cancelled
+	Status    string `json:"status" gorm:"type:varchar(32);index;index:idx_user_sub_active,priority:2"` // scheduled/active/expired/cancelled
 
-	Source string `json:"source" gorm:"type:varchar(32);default:'order'"` // order/admin
+	Source string `json:"source" gorm:"type:varchar(32);default:'order'"` // order/admin/cloud_contract
+
+	// ExternalSubscriptionId 是 Cloud 合同号在本地的投影标识。
+	// 唯一性在事务内按用户加锁校验，而不是靠数据库唯一索引——存量行该列为空串，
+	// 而三种目标数据库（SQLite/MySQL/PostgreSQL）对「允许多个空值」的部分唯一索引语法不通用。
+	ExternalSubscriptionId string `json:"external_subscription_id" gorm:"type:varchar(128);index"`
+
+	// CycleSeconds > 0 表示这是自带周期参数的外部合同投影：
+	// 每 CycleSeconds 秒清零重置一次，不使用自然月对齐。
+	CycleSeconds int64 `json:"cycle_seconds" gorm:"type:bigint;not null;default:0"`
+
+	// CycleCount 是合同包含的周期数（月付 1、年付 12）；0 表示无限期循环（免费档）。
+	CycleCount int `json:"cycle_count" gorm:"type:int;not null;default:0"`
 
 	LastResetTime int64 `json:"last_reset_time" gorm:"type:bigint;default:0"`
 	NextResetTime int64 `json:"next_reset_time" gorm:"type:bigint;default:0;index"`
@@ -826,7 +863,8 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 	}
 	now := common.GetTimestamp()
 	var subs []UserSubscription
-	err := DB.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+	err := DB.Where(activeSubscriptionWindow, SubscriptionStatusActive, now, now).
+		Where("user_id = ?", userId).
 		Order("end_time desc, id desc").
 		Find(&subs).Error
 	if err != nil {
@@ -844,7 +882,8 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 	now := common.GetTimestamp()
 	var count int64
 	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		Where(activeSubscriptionWindow, SubscriptionStatusActive, now, now).
+		Where("user_id = ?", userId).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -861,8 +900,8 @@ func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
 	now := common.GetTimestamp()
 	var strictCount int64
 	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ? AND allow_wallet_overflow = ?",
-			userId, "active", now, false).
+		Where(activeSubscriptionWindow, SubscriptionStatusActive, now, now).
+		Where("user_id = ? AND allow_wallet_overflow = ?", userId, false).
 		Count(&strictCount).Error; err != nil {
 		return false, err
 	}
@@ -1137,11 +1176,17 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 	for userId := range userIds {
 		cacheGroup := ""
 		err := DB.Transaction(func(tx *gorm.DB) error {
+			// 到期事务显式清空订阅剩余额度：把 amount_used 抬到 amount_total，
+			// 使「剩余额度视为 0」成为落库事实，而不是只靠 status 过滤隐含。
 			res := tx.Model(&UserSubscription{}).
-				Where("user_id = ? AND status = ? AND end_time > 0 AND end_time <= ?", userId, "active", now).
+				Where("user_id = ? AND status = ? AND end_time > 0 AND end_time <= ?", userId, SubscriptionStatusActive, now).
 				Updates(map[string]interface{}{
-					"status":     "expired",
-					"updated_at": common.GetTimestamp(),
+					"status":      SubscriptionStatusExpired,
+					"amount_used": gorm.Expr("amount_total"),
+					// 已到期的合同不得再留一个待触发的重置时刻，
+					// 否则「到期优先于重置」的顺序保证会被下一轮扫描绕过。
+					"next_reset_time": 0,
+					"updated_at":      common.GetTimestamp(),
 				})
 			if res.Error != nil {
 				return res.Error
@@ -1209,6 +1254,12 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 	return expiredCount, nil
 }
 
+// 订阅预扣账本状态。
+const (
+	subscriptionPreConsumeStatusConsumed = "consumed"
+	subscriptionPreConsumeStatusRefunded = "refunded"
+)
+
 // SubscriptionPreConsumeRecord stores idempotent pre-consume operations per request.
 type SubscriptionPreConsumeRecord struct {
 	Id                 int    `json:"id"`
@@ -1233,14 +1284,36 @@ func (r *SubscriptionPreConsumeRecord) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
-func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, plan *SubscriptionPlan, now int64) error {
-	if tx == nil || sub == nil || plan == nil {
+// nextSubscriptionResetTime 计算下一次清零重置时刻；返回 0 表示不再重置。
+//
+// 外部合同投影（CycleSeconds > 0）按固定秒数推进，这是 30 天固定周期口径，
+// 不使用自然月、AddDate(month) 或本地夏令时；存量 plan 驱动的订阅沿用 plan 的
+// quota_reset_period 语义（daily/weekly/monthly/custom）。
+func nextSubscriptionResetTime(tx *gorm.DB, sub *UserSubscription, base time.Time) (int64, error) {
+	if sub.CycleSeconds > 0 {
+		next := base.Add(time.Duration(sub.CycleSeconds) * time.Second).Unix()
+		if sub.EndTime > 0 && next > sub.EndTime {
+			return 0, nil
+		}
+		return next, nil
+	}
+	plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+	if err != nil {
+		return 0, err
+	}
+	return calcNextResetTime(base, plan, sub.EndTime), nil
+}
+
+// maybeResetUserSubscriptionTx 在需要时执行一次「清零并恢复完整周期额度」。
+//
+// 停机跨过多个周期时只推进到当前应处周期并清零一次，绝不叠加漏掉周期的额度。
+// 合同最后一期结束时 nextSubscriptionResetTime 返回 0，配合「到期优先于重置」的
+// 维护顺序，保证月付第 30 天、年付第 360 天只清零不重置。
+func maybeResetUserSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) error {
+	if tx == nil || sub == nil {
 		return errors.New("invalid reset args")
 	}
 	if sub.NextResetTime > 0 && sub.NextResetTime > now {
-		return nil
-	}
-	if NormalizeResetPeriod(plan.QuotaResetPeriod) == SubscriptionResetNever {
 		return nil
 	}
 	baseUnix := sub.LastResetTime
@@ -1248,12 +1321,18 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 		baseUnix = sub.StartTime
 	}
 	base := time.Unix(baseUnix, 0)
-	next := calcNextResetTime(base, plan, sub.EndTime)
+	next, err := nextSubscriptionResetTime(tx, sub, base)
+	if err != nil {
+		return err
+	}
 	advanced := false
 	for next > 0 && next <= now {
 		advanced = true
 		base = time.Unix(next, 0)
-		next = calcNextResetTime(base, plan, sub.EndTime)
+		next, err = nextSubscriptionResetTime(tx, sub, base)
+		if err != nil {
+			return err
+		}
 	}
 	if !advanced {
 		if sub.NextResetTime == 0 && next > 0 {
@@ -1291,7 +1370,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			return query.Error
 		}
 		if query.RowsAffected > 0 {
-			if existing.Status == "refunded" {
+			if existing.Status == subscriptionPreConsumeStatusRefunded {
 				return errors.New("subscription pre-consume already refunded")
 			}
 			var sub UserSubscription
@@ -1306,10 +1385,13 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			return nil
 		}
 
+		// start_time <= now 是未来合同的门禁：已购买但尚未生效的 scheduled 投影
+		// 不得被提前消费。status 过滤本已排除 scheduled，这里再按时间兜一层。
 		var subs []UserSubscription
 		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
+			Where(activeSubscriptionWindow, SubscriptionStatusActive, now, now).
+			Where("user_id = ?", userId).
+			Order(perpetualLastOrdering).
 			Find(&subs).Error; err != nil {
 			return errors.New("no active subscription")
 		}
@@ -1318,11 +1400,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 		for _, candidate := range subs {
 			sub := candidate
-			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
-			if err != nil {
-				return err
-			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+			if err := maybeResetUserSubscriptionTx(tx, &sub, now); err != nil {
 				return err
 			}
 			usedBefore := sub.AmountUsed
@@ -1337,12 +1415,12 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				UserId:             userId,
 				UserSubscriptionId: sub.Id,
 				PreConsumed:        amount,
-				Status:             "consumed",
+				Status:             subscriptionPreConsumeStatusConsumed,
 			}
 			if err := tx.Create(record).Error; err != nil {
 				var dup SubscriptionPreConsumeRecord
 				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
+					if dup.Status == subscriptionPreConsumeStatusRefunded {
 						return errors.New("subscription pre-consume already refunded")
 					}
 					returnValue.UserSubscriptionId = sub.Id
@@ -1382,19 +1460,24 @@ func RefundSubscriptionPreConsume(requestId string) error {
 		var record SubscriptionPreConsumeRecord
 		if err := lockForUpdate(tx).
 			Where("request_id = ?", requestId).First(&record).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// 本次请求没有动过订阅池（例如纯钱包扣减），无需退还。
+				return nil
+			}
 			return err
 		}
-		if record.Status == "refunded" {
+		if record.Status == subscriptionPreConsumeStatusRefunded {
 			return nil
 		}
 		if record.PreConsumed <= 0 {
-			record.Status = "refunded"
+			record.Status = subscriptionPreConsumeStatusRefunded
 			return tx.Save(&record).Error
 		}
-		if err := PostConsumeUserSubscriptionDelta(record.UserSubscriptionId, -record.PreConsumed); err != nil {
+		// 必须复用同一事务：原先调用会另开事务改同一行订阅，既不原子也可能与本事务持有的行锁互锁。
+		if err := postConsumeSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed); err != nil {
 			return err
 		}
-		record.Status = "refunded"
+		record.Status = subscriptionPreConsumeStatusRefunded
 		return tx.Save(&record).Error
 	})
 }
@@ -1418,18 +1501,14 @@ func ResetDueSubscriptions(limit int) (int, error) {
 	resetCount := 0
 	for _, sub := range subs {
 		subCopy := sub
-		plan, err := getSubscriptionPlanByIdTx(nil, sub.PlanId)
-		if err != nil || plan == nil {
-			continue
-		}
-		err = DB.Transaction(func(tx *gorm.DB) error {
+		err := DB.Transaction(func(tx *gorm.DB) error {
 			var locked UserSubscription
 			if err := lockForUpdate(tx).
 				Where("id = ? AND next_reset_time > 0 AND next_reset_time <= ?", subCopy.Id, now).
 				First(&locked).Error; err != nil {
 				return nil
 			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &locked, plan, now); err != nil {
+			if err := maybeResetUserSubscriptionTx(tx, &locked, now); err != nil {
 				return err
 			}
 			resetCount++
@@ -1490,6 +1569,20 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 		return nil
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
+		return postConsumeSubscriptionDeltaTx(tx, userSubscriptionId, delta)
+	})
+}
+
+// postConsumeSubscriptionDeltaTx 在调用方事务内调整订阅池用量。
+// 必须复用调用方事务：否则持锁的调用方另开连接改同一行，既不原子也可能互锁。
+func postConsumeSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, delta int64) error {
+	if userSubscriptionId <= 0 {
+		return errors.New("invalid userSubscriptionId")
+	}
+	if delta == 0 {
+		return nil
+	}
+	{
 		var sub UserSubscription
 		if err := lockForUpdate(tx).
 			Where("id = ?", userSubscriptionId).
@@ -1501,9 +1594,45 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 			newUsed = 0
 		}
 		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+			// 订阅已到期时 amount_used 已被抬到 amount_total（显式清零剩余额度），
+			// 此时一笔跨越到期时刻的请求做正向差额结算必然越界。这笔消耗是真实发生的，
+			// 记下真值比让结算报错更可审计——池子已关闭，剩余额度两种算法都是 0。
+			if sub.Status == SubscriptionStatusActive {
+				return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+			}
+			common.SysLog(fmt.Sprintf("subscription %d settled past its closed cycle: used=%d total=%d status=%s",
+				sub.Id, newUsed, sub.AmountTotal, sub.Status))
 		}
 		sub.AmountUsed = newUsed
 		return tx.Save(&sub).Error
+	}
+}
+
+// AdjustSubscriptionPreConsume 调整本次请求在订阅池上的预扣量（正数补扣、负数退还），
+// 并同步幂等账本，使后续 Refund 退还的一定是当前实际预扣量，
+// 而不需要调用方额外记账「补充预扣」再单独回滚。
+func AdjustSubscriptionPreConsume(requestId string, delta int64) error {
+	if strings.TrimSpace(requestId) == "" {
+		return errors.New("requestId is empty")
+	}
+	if delta == 0 {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var record SubscriptionPreConsumeRecord
+		if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
+			return err
+		}
+		if record.Status == subscriptionPreConsumeStatusRefunded {
+			return errors.New("subscription pre-consume already refunded")
+		}
+		if err := postConsumeSubscriptionDeltaTx(tx, record.UserSubscriptionId, delta); err != nil {
+			return err
+		}
+		record.PreConsumed += delta
+		if record.PreConsumed < 0 {
+			record.PreConsumed = 0
+		}
+		return tx.Save(&record).Error
 	})
 }
