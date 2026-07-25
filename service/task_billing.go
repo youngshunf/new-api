@@ -81,14 +81,37 @@ func resolveTokenKey(ctx context.Context, tokenId int, taskID string) string {
 	return token.Key
 }
 
-// taskIsSubscription 判断任务是否通过订阅计费。
-func taskIsSubscription(task *model.Task) bool {
-	return task.PrivateData.BillingSource == BillingSourceSubscription && task.PrivateData.SubscriptionId > 0
+// taskFundingSession 用任务快照重建提交时的组合资金来源，
+// 使轮询阶段的补扣/退还与同步请求走同一套幂等账本和同一套拆分规则。
+func taskFundingSession(task *model.Task) *CreditFunding {
+	private := task.PrivateData
+	if private.RequestId == "" {
+		return nil
+	}
+	if private.FundingSubscriptionPart == 0 && private.FundingWalletPart == 0 {
+		return nil
+	}
+	return &CreditFunding{
+		requestId:        private.RequestId,
+		userId:           task.UserId,
+		options:          model.CombinedPreConsumeOptions{AllowSubscription: true, AllowWallet: true},
+		subscriptionPart: private.FundingSubscriptionPart,
+		walletPart:       private.FundingWalletPart,
+		subscriptionId:   private.SubscriptionId,
+	}
 }
 
-// taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
+// taskAdjustFunding 调整任务的资金来源，delta > 0 表示补扣，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
-	if taskIsSubscription(task) {
+	if funding := taskFundingSession(task); funding != nil {
+		if err := funding.Settle(delta); err != nil {
+			return err
+		}
+		task.PrivateData.FundingSubscriptionPart, task.PrivateData.FundingWalletPart = funding.Allocation()
+		return nil
+	}
+	// 兼容本次改造前提交、快照里没有拆分明细的存量任务。
+	if task.PrivateData.BillingSource == BillingSourceSubscription && task.PrivateData.SubscriptionId > 0 {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
 	}
 	if delta > 0 {

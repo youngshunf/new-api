@@ -53,6 +53,10 @@ func runSubscriptionQuotaResetOnce() {
 	ctx := context.Background()
 	totalReset := 0
 	totalExpired := 0
+	totalActivated := 0
+	// 维护顺序是硬约束：先 expire、再 activate、最后 reset。
+	// 先 expire 保证月付第 30 天、年付第 360 天只清零不重置；
+	// activate 夹在中间保证「旧合同到期 → 新合同激活」串行，不出现双订阅池。
 	for {
 		n, err := model.ExpireDueSubscriptions(subscriptionResetBatchSize)
 		if err != nil {
@@ -63,6 +67,20 @@ func runSubscriptionQuotaResetOnce() {
 			break
 		}
 		totalExpired += n
+		if n < subscriptionResetBatchSize {
+			break
+		}
+	}
+	for {
+		n, err := model.ActivateDueSubscriptions(subscriptionResetBatchSize)
+		if err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("subscription activate task failed: %v", err))
+			return
+		}
+		if n == 0 {
+			break
+		}
+		totalActivated += n
 		if n < subscriptionResetBatchSize {
 			break
 		}
@@ -87,7 +105,7 @@ func runSubscriptionQuotaResetOnce() {
 			subscriptionCleanupLast.Store(time.Now().Unix())
 		}
 	}
-	if common.DebugEnabled && (totalReset > 0 || totalExpired > 0) {
-		logger.LogDebug(ctx, "subscription maintenance: reset_count=%d, expired_count=%d", totalReset, totalExpired)
+	if common.DebugEnabled && (totalReset > 0 || totalExpired > 0 || totalActivated > 0) {
+		logger.LogDebug(ctx, "subscription maintenance: reset_count=%d, expired_count=%d, activated_count=%d", totalReset, totalExpired, totalActivated)
 	}
 }

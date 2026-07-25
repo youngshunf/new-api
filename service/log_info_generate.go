@@ -162,7 +162,14 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 	if relayInfo.UserSetting.BillingPreference != "" {
 		other["billing_preference"] = relayInfo.UserSetting.BillingPreference
 	}
-	if relayInfo.BillingSource == "subscription" {
+	// 两个资金池的实际扣减必须分别落进日志：只记单一 billing_source 会丢失拆分信息。
+	if relayInfo.FundingSubscriptionPart != 0 {
+		other["funding_subscription_part"] = relayInfo.FundingSubscriptionPart
+	}
+	if relayInfo.FundingWalletPart != 0 {
+		other["funding_wallet_part"] = relayInfo.FundingWalletPart
+	}
+	if relayInfo.BillingSource == BillingSourceSubscription || relayInfo.BillingSource == BillingSourceComposite {
 		if relayInfo.SubscriptionId != 0 {
 			other["subscription_id"] = relayInfo.SubscriptionId
 		}
