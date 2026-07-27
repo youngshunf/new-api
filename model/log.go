@@ -66,6 +66,7 @@ type Log struct {
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
 	Quota             int    `json:"quota" gorm:"default:0"`
+	Credits           string `json:"credits" gorm:"-"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens  int    `json:"completion_tokens" gorm:"default:0"`
 	UseTime           int    `json:"use_time" gorm:"default:0"`
@@ -78,6 +79,12 @@ type Log struct {
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
+}
+
+func (log *Log) AfterFind(_ *gorm.DB) error {
+	// quota 是 NewAPI 私有存储单位；跨服务响应必须同时给出权威积分字符串。
+	log.Credits = common.FormatQuotaAsCredits(int64(log.Quota))
+	return nil
 }
 
 // don't use iota, avoid change log type value
