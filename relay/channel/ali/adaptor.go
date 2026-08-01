@@ -124,8 +124,11 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 				fullRequestURL = fmt.Sprintf("%s/api/v1/services/aigc/multimodal-generation/generation", info.ChannelBaseUrl)
 			}
 		case constant.RelayModeAudioSpeech:
-			// DashScope qwen3-tts uses multimodal-generation endpoint
-			fullRequestURL = fmt.Sprintf("%s/api/v1/services/aigc/multimodal-generation/generation", info.ChannelBaseUrl)
+			if isAliQwenAudioTTSModel(info.UpstreamModelName) {
+				fullRequestURL = fmt.Sprintf("%s/api/v1/services/audio/tts/SpeechSynthesizer", info.ChannelBaseUrl)
+			} else {
+				fullRequestURL = fmt.Sprintf("%s/api/v1/services/aigc/multimodal-generation/generation", info.ChannelBaseUrl)
+			}
 		case constant.RelayModeAudioTranscription, constant.RelayModeAudioTranslation:
 			// DashScope ASR (qwen3-asr) via OpenAI-compatible chat completions endpoint (using input_audio)
 			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/chat/completions", info.ChannelBaseUrl)
@@ -137,6 +140,19 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	}
 
 	return fullRequestURL, nil
+}
+
+func isAliQwenAudioTTSModel(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(normalized, "qwen-audio-3.0-tts-")
+}
+
+func aliProviderRequestID(c *gin.Context, responseRequestID string) string {
+	if responseRequestID != "" {
+		c.Set(common.UpstreamRequestIdKey, responseRequestID)
+		return responseRequestID
+	}
+	return c.GetString(common.UpstreamRequestIdKey)
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
@@ -241,7 +257,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 	} else if info.RelayMode == constant.RelayModeAudioTranscription || info.RelayMode == constant.RelayModeAudioTranslation {
 		return ConvertAudioRequestForAliSTT(c, info, request)
 	}
-	
+
 	oaiAdaptor := &openai.Adaptor{}
 	return oaiAdaptor.ConvertAudioRequest(c, info, request)
 }

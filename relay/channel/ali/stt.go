@@ -9,10 +9,10 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -44,9 +44,10 @@ type AliSTTRequest struct {
 }
 
 type AliSTTResponse struct {
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-	Choices []struct {
+	RequestID string `json:"request_id,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Choices   []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
@@ -139,8 +140,14 @@ func AliSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 
 	if chatResp.Code != "" || chatResp.Message != "" {
+		providerRequestID := aliProviderRequestID(c, chatResp.RequestID)
 		return nil, types.NewError(
-			fmt.Errorf("DashScope STT error: %s (%s)", chatResp.Message, chatResp.Code),
+			fmt.Errorf(
+				"DashScope STT error: %s (%s), provider request id: %s",
+				chatResp.Message,
+				chatResp.Code,
+				providerRequestID,
+			),
 			types.ErrorCodeDoRequestFailed,
 		)
 	}
@@ -153,6 +160,7 @@ func AliSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 
 	text := chatResp.Choices[0].Message.Content
+	aliProviderRequestID(c, chatResp.RequestID)
 
 	// OpenAI compatible STT format
 	sttResp := dto.AudioResponse{

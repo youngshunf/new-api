@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,6 +36,20 @@ type AliTTSRequest struct {
 	Parameters *AliTTSParameters `json:"parameters,omitempty"`
 }
 
+type AliQwenAudioTTSInput struct {
+	Text        string   `json:"text"`
+	Voice       string   `json:"voice"`
+	Format      string   `json:"format,omitempty"`
+	SampleRate  int      `json:"sample_rate,omitempty"`
+	Rate        *float64 `json:"rate,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
+}
+
+type AliQwenAudioTTSRequest struct {
+	Model string               `json:"model"`
+	Input AliQwenAudioTTSInput `json:"input"`
+}
+
 // ── DashScope qwen3-tts 响应结构 ─────────────────────────────
 
 // AliTTSAudio represents an audio item in the TTS output.
@@ -54,7 +69,7 @@ type AliTTSUsage struct {
 
 // AliTTSResponse represents a DashScope qwen3-tts response.
 type AliTTSResponse struct {
-	RequestID string      `json:"request_id,omitempty"`
+	RequestID string       `json:"request_id,omitempty"`
 	Output    AliTTSOutput `json:"output"`
 	Usage     AliTTSUsage  `json:"usage,omitempty"`
 	Code      string       `json:"code,omitempty"`
@@ -95,7 +110,24 @@ func ConvertOpenAITTSToAliTTS(req dto.AudioRequest) AliTTSRequest {
 // ConvertAudioRequestForAli converts an OpenAI AudioRequest to a DashScope qwen3-tts
 // request body (io.Reader). Only TTS (speech) mode is supported.
 func ConvertAudioRequestForAli(c *gin.Context, info *relaycommon.RelayInfo, req dto.AudioRequest) (io.Reader, error) {
-	aliReq := ConvertOpenAITTSToAliTTS(req)
+	var aliReq any = ConvertOpenAITTSToAliTTS(req)
+	upstreamModel := req.Model
+	if info != nil && info.UpstreamModelName != "" {
+		upstreamModel = info.UpstreamModelName
+	}
+	if isAliQwenAudioTTSModel(upstreamModel) {
+		aliReq = AliQwenAudioTTSRequest{
+			Model: req.Model,
+			Input: AliQwenAudioTTSInput{
+				Text:        req.Input,
+				Voice:       req.Voice,
+				Format:      req.ResponseFormat,
+				SampleRate:  24_000,
+				Rate:        req.Speed,
+				Instruction: req.Instructions,
+			},
+		}
+	}
 	jsonData, err := json.Marshal(aliReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Ali TTS request: %w", err)
@@ -132,8 +164,14 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 
 	// Check for API errors
 	if aliResp.Code != "" {
+		providerRequestID := aliProviderRequestID(c, aliResp.RequestID)
 		return types.NewError(
-			fmt.Errorf("DashScope TTS error (%s): %s", aliResp.Code, aliResp.Message),
+			fmt.Errorf(
+				"DashScope TTS error (%s): %s, provider request id: %s",
+				aliResp.Code,
+				aliResp.Message,
+				providerRequestID,
+			),
 			types.ErrorCodeDoRequestFailed,
 		), nil
 	}
@@ -146,11 +184,18 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 
 	audioURL := aliResp.Output.Audio.URL
-	logger.LogInfo(c, fmt.Sprintf("Ali TTS: downloading audio from %s", audioURL))
+	providerRequestID := aliProviderRequestID(c, aliResp.RequestID)
+	logger.LogInfo(c, fmt.Sprintf("Ali TTS: downloading audio, provider request id: %s", providerRequestID))
 
-	// Download the audio file from the URL
-	httpClient := &http.Client{}
-	audioResp, err := httpClient.Get(audioURL)
+	downloadRequest, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, audioURL, nil)
+	if err != nil {
+		return types.NewError(
+			fmt.Errorf("failed to create TTS audio download request: %w", err),
+			types.ErrorCodeDoRequestFailed,
+		), nil
+	}
+	httpClient := &http.Client{Timeout: 2 * time.Minute}
+	audioResp, err := httpClient.Do(downloadRequest)
 	if err != nil {
 		return types.NewError(
 			fmt.Errorf("failed to download TTS audio: %w", err),
@@ -166,26 +211,38 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		), nil
 	}
 
-	// Determine content type from the audio response or default to wav
+	const maximumAudioBytes = 64 * 1024 * 1024
+	audio, err := io.ReadAll(io.LimitReader(audioResp.Body, maximumAudioBytes+1))
+	if err != nil {
+		return types.NewError(
+			fmt.Errorf("failed to read TTS audio download: %w", err),
+			types.ErrorCodeReadResponseBodyFailed,
+		), nil
+	}
+	if len(audio) > maximumAudioBytes {
+		return types.NewError(
+			fmt.Errorf("TTS audio download exceeds %d bytes", maximumAudioBytes),
+			types.ErrorCodeBadResponseBody,
+		), nil
+	}
+
 	contentType := audioResp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "audio/wav"
 	}
 
-	// Stream the audio back to the client (OpenAI TTS compatible)
 	c.Writer.Header().Set("Content-Type", contentType)
 	c.Writer.WriteHeader(http.StatusOK)
-
-	written, err := io.Copy(c.Writer, audioResp.Body)
-	if err != nil {
-		logger.LogError(c, fmt.Sprintf("Ali TTS: error streaming audio: %v", err))
+	if _, err := c.Writer.Write(audio); err != nil {
+		return types.NewError(
+			fmt.Errorf("failed to write TTS audio response: %w", err),
+			types.ErrorCodeDoRequestFailed,
+		), nil
 	}
 
-	// Build usage based on characters
 	usage := &dto.Usage{
-		PromptTokens:    aliResp.Usage.Characters,
-		CompletionTokens: int(written / 1000), // rough estimate: 1 token per KB
-		TotalTokens:     aliResp.Usage.Characters + int(written/1000),
+		PromptTokens: aliResp.Usage.Characters,
+		TotalTokens:  aliResp.Usage.Characters,
 	}
 
 	return nil, usage
