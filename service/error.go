@@ -112,11 +112,21 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		}
 		return
 	}
+	providerRequestID := normalizedProviderRequestID(errResponse.RequestID)
+	if providerRequestID == "" {
+		for _, headerName := range []string{common.RequestIdKey, "X-Request-Id", "Request-Id"} {
+			providerRequestID = normalizedProviderRequestID(resp.Header.Get(headerName))
+			if providerRequestID != "" {
+				break
+			}
+		}
+	}
 
 	if common.GetJsonType(errResponse.Error) == "object" {
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
+			oaiError.Message = withProviderRequestID(oaiError.Message, providerRequestID)
 			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
 			if showBodyWhenFail {
 				newApiErr.Err = buildErrWithBody(newApiErr.Error())
@@ -124,7 +134,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 			return
 		}
 	}
-	message := errResponse.ToMessage()
+	message := withProviderRequestID(errResponse.ToMessage(), providerRequestID)
 	if message == "" {
 		// The body parsed as JSON but carried no usable error message; log the
 		// raw body so the upstream failure remains diagnosable.
@@ -135,6 +145,32 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+func normalizedProviderRequestID(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || len(requestID) > 128 {
+		return ""
+	}
+	for _, char := range requestID {
+		if !((char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' || char == '_' || char == '.' || char == ':') {
+			return ""
+		}
+	}
+	return requestID
+}
+
+func withProviderRequestID(message string, requestID string) string {
+	if requestID == "" || strings.Contains(message, requestID) {
+		return message
+	}
+	if message == "" {
+		return fmt.Sprintf("provider request id: %s", requestID)
+	}
+	return fmt.Sprintf("%s, provider request id: %s", message, requestID)
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {

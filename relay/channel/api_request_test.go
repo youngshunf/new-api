@@ -191,3 +191,33 @@ func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.
 	require.Equal(t, "sess-123", upstreamReq.Header.Get("Session_id"))
 	require.Empty(t, upstreamReq.Header.Get("X-Codex-Beta-Features"))
 }
+
+func TestUpstreamRequestIDFromHeadersSupportsStandardAliases(t *testing.T) {
+	testCases := []struct {
+		name     string
+		headers  http.Header
+		expected string
+	}{
+		{
+			name:     "oneapi",
+			headers:  http.Header{"X-Oneapi-Request-Id": []string{"oneapi-1"}},
+			expected: "oneapi-1",
+		},
+		{
+			name:     "standard",
+			headers:  http.Header{"X-Request-Id": []string{"provider-1"}},
+			expected: "provider-1",
+		},
+		{
+			name:     "legacy",
+			headers:  http.Header{"Request-Id": []string{"provider-2"}},
+			expected: "provider-2",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(t, testCase.expected, upstreamRequestIDFromHeaders(testCase.headers))
+		})
+	}
+}

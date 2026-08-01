@@ -474,6 +474,16 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
+
+func upstreamRequestIDFromHeaders(headers http.Header) string {
+	for _, headerName := range []string{common2.RequestIdKey, "X-Request-Id", "Request-Id"} {
+		if requestID := strings.TrimSpace(headers.Get(headerName)); requestID != "" {
+			return requestID
+		}
+	}
+	return ""
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
@@ -530,7 +540,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		))
 	}
 
-	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
+	if upID := upstreamRequestIDFromHeaders(resp.Header); upID != "" {
 		c.Set(common2.UpstreamRequestIdKey, upID)
 	}
 
