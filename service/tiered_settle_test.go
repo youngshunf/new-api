@@ -3,12 +3,19 @@ package service
 import (
 	"math"
 	"math/rand"
+	"net/http"
 	"testing"
 
-	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaykittypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Claude Sonnet-style tiered expression: standard vs long-context
@@ -308,6 +315,261 @@ func TestTryTieredSettle_NoRequestInput_FallsBackToDefault(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Group ratio tests
 // ---------------------------------------------------------------------------
+
+type recordingBillingSettler struct {
+	preConsumedQuota int
+	reserveTargets   []int
+}
+
+func (*recordingBillingSettler) Settle(int) error { return nil }
+
+func (*recordingBillingSettler) Refund(*gin.Context) {}
+
+func (*recordingBillingSettler) NeedsRefund() bool { return false }
+
+func (s *recordingBillingSettler) GetPreConsumedQuota() int {
+	return s.preConsumedQuota
+}
+
+func (s *recordingBillingSettler) Reserve(targetQuota int) error {
+	s.reserveTargets = append(s.reserveTargets, targetQuota)
+	if targetQuota > s.preConsumedQuota {
+		s.preConsumedQuota = targetQuota
+	}
+	return nil
+}
+
+func TestPrepareTieredBillingForSelectedGroupUpdatesReservation(t *testing.T) {
+	const expr = `tier("base", p)`
+	billing := &recordingBillingSettler{preConsumedQuota: 50_000}
+	relayInfo := &relaycommon.RelayInfo{
+		Billing:               billing,
+		FinalPreConsumedQuota: 50_000,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                expr,
+			ExprHash:                  billingexpr.ExprHashString(expr),
+			GroupRatio:                0.10,
+			EstimatedQuotaBeforeGroup: 500_000,
+			EstimatedQuotaAfterGroup:  50_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: types.PriceData{
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.20},
+		},
+	}
+
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+	require.Equal(t, []int{100_000}, billing.reserveTargets)
+	assert.Equal(t, 100_000, billing.preConsumedQuota)
+	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
+	assert.Equal(t, 0.20, relayInfo.TieredBillingSnapshot.GroupRatio)
+	assert.Equal(t, 100_000, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+}
+
+func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *testing.T) {
+	truncate(t)
+	gin.SetMode(gin.TestMode)
+
+	const userID = 700
+	seedUser(t, userID, 500_000)
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+		// doc94：request_id 是两个资金池预扣账本的幂等键，必须随请求一路带下来。
+		RequestId:       "req-tiered-700",
+		ForcePreConsume: true,
+		OriginModelName: "gpt-test",
+		UserSetting: dto.UserSetting{
+			BillingPreference: "wallet_only",
+		},
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                `tier("base", p)`,
+			ExprHash:                  billingexpr.ExprHashString(`tier("base", p)`),
+			GroupRatio:                0,
+			EstimatedQuotaBeforeGroup: 500_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: types.PriceData{
+			FreeModel:      true,
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.20},
+		},
+	}
+	ctx, _ := gin.CreateTestContext(nil)
+
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(ctx, relayInfo))
+	require.NotNil(t, relayInfo.Billing)
+	assert.False(t, relayInfo.PriceData.FreeModel, "FreeModel must be cleared after switching to a paid group")
+	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
+	assert.Equal(t, 0.20, relayInfo.TieredBillingSnapshot.GroupRatio)
+	assert.Equal(t, 100_000, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+
+	userQuota, err := model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 400_000, userQuota)
+}
+
+func TestPrepareTieredBillingForSelectedGroupPaidToFreeKeepsFreeModelFalse(t *testing.T) {
+	const expr = `tier("base", p)`
+	billing := &recordingBillingSettler{preConsumedQuota: 50_000}
+	relayInfo := &relaycommon.RelayInfo{
+		Billing:               billing,
+		FinalPreConsumedQuota: 50_000,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                expr,
+			ExprHash:                  billingexpr.ExprHashString(expr),
+			GroupRatio:                0.10,
+			EstimatedQuotaBeforeGroup: 500_000,
+			EstimatedQuotaAfterGroup:  50_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: types.PriceData{
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0},
+		},
+	}
+
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+
+	// Pre-consume did happen under the paid group, so FreeModel stays false;
+	// settlement already yields 0 for GroupRatio == 0 and the session refunds.
+	assert.False(t, relayInfo.PriceData.FreeModel)
+	assert.Empty(t, billing.reserveTargets)
+	assert.Equal(t, 50_000, relayInfo.FinalPreConsumedQuota)
+}
+
+// doc94：切换到更贵分组时的追加预扣不足，必须以付费墙错误终止请求。
+//
+// 上游同名用例断言「钱包无条件全额扣减、差额记为欠费（余额转负）」；本 fork 的
+// 积分权威模型（model/wallet_preconsume.go 的 shiftWalletQuotaTx）明确禁止透支，
+// 所以这里改为断言 doc94 的对外契约：HTTP 403 + insufficient_user_quota，
+// 且余额不得变成负数、预扣不得推进。
+func TestPrepareTieredBillingForSelectedGroupTopUpInsufficientCreditsReturnsPaywall(t *testing.T) {
+	truncate(t)
+
+	const userID = 701
+	// 70k 种子余额先完成 50k 初始预扣，余 20k 不足以覆盖切换分组后追加的 50k。
+	seedUser(t, userID, 70_000)
+
+	funding := &CreditFunding{
+		requestId: "req-tiered-701",
+		userId:    userID,
+		options:   model.CombinedPreConsumeOptions{AllowWallet: true},
+	}
+	require.NoError(t, funding.PreConsume(50_000))
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:                userID,
+		IsPlayground:          true,
+		FinalPreConsumedQuota: 50_000,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                `tier("base", p)`,
+			ExprHash:                  billingexpr.ExprHashString(`tier("base", p)`),
+			GroupRatio:                0.10,
+			EstimatedQuotaBeforeGroup: 500_000,
+			EstimatedQuotaAfterGroup:  50_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: types.PriceData{
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.20},
+		},
+	}
+	session := &BillingSession{
+		relayInfo:        relayInfo,
+		funding:          funding,
+		preConsumedQuota: 50_000,
+	}
+	relayInfo.Billing = session
+
+	apiErr := PrepareTieredBillingForSelectedGroup(nil, relayInfo)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, relaykittypes.ErrorCodeInsufficientUserQuota, apiErr.GetErrorCode())
+	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+
+	// 预扣未推进，钱包余额也没有被扣成负数。
+	assert.Equal(t, 50_000, session.GetPreConsumedQuota())
+	userQuota, err := model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 20_000, userQuota)
+}
+
+func TestBillingSessionReserveWalletTopUpDecrementsBalance(t *testing.T) {
+	truncate(t)
+
+	const userID = 702
+	// 550k 种子余额先完成 50k 初始预扣，剩 500k 供追加预扣使用。
+	seedUser(t, userID, 550_000)
+
+	funding := &CreditFunding{
+		requestId: "req-tiered-702",
+		userId:    userID,
+		options:   model.CombinedPreConsumeOptions{AllowWallet: true},
+	}
+	require.NoError(t, funding.PreConsume(50_000))
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+	}
+	session := &BillingSession{
+		relayInfo:        relayInfo,
+		funding:          funding,
+		preConsumedQuota: 50_000,
+	}
+
+	require.NoError(t, session.Reserve(100_000))
+
+	assert.Equal(t, 100_000, session.GetPreConsumedQuota())
+	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
+	userQuota, err := model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 450_000, userQuota)
+}
+
+func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {
+	const expr = `tier("base", p)`
+	tests := []struct {
+		name            string
+		finalGroupRatio float64
+		wantQuota       int
+	}{
+		{name: "more expensive final group", finalGroupRatio: 0.20, wantQuota: 100_000},
+		{name: "free final group", finalGroupRatio: 0, wantQuota: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relayInfo := &relaycommon.RelayInfo{
+				Billing:               &recordingBillingSettler{preConsumedQuota: 50_000},
+				FinalPreConsumedQuota: 50_000,
+				TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+					BillingMode:               "tiered_expr",
+					ExprString:                expr,
+					ExprHash:                  billingexpr.ExprHashString(expr),
+					GroupRatio:                0.10,
+					EstimatedQuotaBeforeGroup: 500_000,
+					EstimatedQuotaAfterGroup:  50_000,
+					QuotaPerUnit:              testQuotaPerUnit,
+				},
+				PriceData: types.PriceData{
+					GroupRatioInfo: types.GroupRatioInfo{GroupRatio: tt.finalGroupRatio},
+				},
+			}
+
+			require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+			ok, quota, result := TryTieredSettle(relayInfo, billingexpr.TokenParams{P: 1_000_000})
+
+			require.True(t, ok)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantQuota, quota)
+			assert.Equal(t, tt.finalGroupRatio, relayInfo.TieredBillingSnapshot.GroupRatio)
+			assert.Equal(t, tt.wantQuota, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+		})
+	}
+}
 
 func TestTryTieredSettle_GroupRatioScaling(t *testing.T) {
 	info := makeRelayInfo(flatExpr, 1.5, 1000, 500)

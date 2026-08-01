@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# new-api 本地编译启动脚本（合并上游 v1.0 双前端架构后适用）
+# new-api 本地编译启动脚本（上游 2026-08 退役 classic 前端后适用）
 #
 # 默认行为：
-#   1) 构建 web/default（v1.0 新前端，含 huanxing admin-tokens 移植）
-#      和 web/classic（上游默认 theme=classic，必须真实构建否则空白页）
+#   1) 构建 web（唯一前端，React 19 + Rsbuild + Base UI，含 huanxing admin-tokens 定制）
 #   2) Go 编译为 ./new-api
 #   3) 直接启动；运行时配置由 main.go 的 godotenv.Load(".env") 读 ./.env
 #
 # 用法:
-#   ./dev-local.sh                       # 默认：default + classic 两份都建，启动
-#   ./dev-local.sh --no-classic          # 只建 default（用 default theme 时省时间）
+#   ./dev-local.sh                       # 默认：建前端 + 后端，启动
 #   ./dev-local.sh --skip-frontend       # 跳过前端，仅重新 go build + 启动
 #   ./dev-local.sh --no-start            # 只编译，不启动
-#
-# 切换前端 theme：登 admin → System Settings → Frontend，default ↔ classic
 #
 # 运行时配置一律走 ./.env（git-ignored）：
 #   PORT=3000
@@ -29,18 +25,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ===== 默认参数 =====
-BUILD_CLASSIC=true
 SKIP_FRONTEND=false
 NO_START=false
 
 # ===== 参数解析 =====
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --no-classic)     BUILD_CLASSIC=false; shift ;;
+        # 兼容旧调用方：classic 前端已随上游退役，这个开关不再有任何作用
+        --no-classic)     echo "提示: --no-classic 已废弃（classic 前端已退役），忽略该参数"; shift ;;
         --skip-frontend)  SKIP_FRONTEND=true; shift ;;
         --no-start)       NO_START=true; shift ;;
         -h|--help)
-            sed -n '2,22p' "$0"
+            sed -n '2,19p' "$0"
             exit 0
             ;;
         *) echo "未知参数: $1"; exit 1 ;;
@@ -52,7 +48,7 @@ echo "  new-api 本地编译启动"
 if [ "$SKIP_FRONTEND" = true ]; then
     echo "  前端：(跳过)"
 else
-    echo "  前端：default $([ "$BUILD_CLASSIC" = true ] && echo "+ classic")"
+    echo "  前端：web"
 fi
 echo "  运行时配置：./.env"
 [ -f .env ] || echo "  ⚠ .env 不存在，建议 cp .env.example .env 后按需填值"
@@ -78,27 +74,16 @@ if [ "$SKIP_FRONTEND" = false ]; then
     echo ""
     echo "[1/2] 构建前端..."
 
-    echo "  → web/default ..."
-    (cd web/default && (bun install --frozen-lockfile 2>/dev/null || bun install))
-    (cd web/default && bun run build)
-    [ -d web/default/dist ] || { echo "错误: web/default/dist 不存在"; exit 1; }
-
-    if [ "$BUILD_CLASSIC" = true ]; then
-        echo "  → web/classic ..."
-        (cd web/classic && (bun install --frozen-lockfile 2>/dev/null || bun install))
-        (cd web/classic && bun run build)
-        [ -d web/classic/dist ] || { echo "错误: web/classic/dist 不存在"; exit 1; }
-    else
-        # main.go 中 //go:embed web/classic/dist 必须有目标，否则编译失败
-        ensure_placeholder_dist "web/classic/dist"
-        echo "  → web/classic（占位，--no-classic 已开；上游默认 theme=classic，请到 System Settings 切到 default）"
-    fi
+    echo "  → web ..."
+    (cd web && (bun install --frozen-lockfile 2>/dev/null || bun install))
+    (cd web && bun run build)
+    [ -d web/dist ] || { echo "错误: web/dist 不存在"; exit 1; }
     echo "  前端构建完成 ✓"
 else
     echo ""
     echo "[1/2] 跳过前端构建"
-    ensure_placeholder_dist "web/default/dist"
-    ensure_placeholder_dist "web/classic/dist"
+    # main.go 中 //go:embed web/dist 必须有目标，否则编译失败
+    ensure_placeholder_dist "web/dist"
 fi
 
 # ===== 2. Go 编译 =====

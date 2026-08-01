@@ -1,10 +1,9 @@
 #!/bin/bash
-# new-api 编译脚本（合并上游 v1.0 双前端架构后适用）
-# 用法: ./build.sh [--skip-frontend] [--no-classic] [--target linux|darwin] [--arch amd64|arm64]
+# new-api 编译脚本（上游 2026-08 退役 classic 前端后适用）
+# 用法: ./build.sh [--skip-frontend] [--target linux|darwin] [--arch amd64|arm64]
 #
-# 注意：上游运行时默认 theme=classic，所以默认必须把 web/classic 真实构建出来，
-#       否则 binary 启动后访问根路径会拿到 build placeholder 空白页。
-#       要切到 v1.0 新前端：登 admin → System Settings → Frontend → default。
+# 前端只剩 web/ 一份（React 19 + Rsbuild + Base UI，含 huanxing admin-tokens 定制），
+# main.go 用 //go:embed web/dist 嵌入；不再有 theme 切换，也不再有 web/classic。
 
 set -e
 
@@ -13,7 +12,6 @@ cd "$SCRIPT_DIR"
 
 # 默认参数
 SKIP_FRONTEND=false
-BUILD_CLASSIC=true
 TARGET_OS=""
 TARGET_ARCH="amd64"
 OUTPUT_NAME="new-api"
@@ -26,7 +24,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --no-classic)
-            BUILD_CLASSIC=false
+            # 兼容旧调用方：classic 前端已随上游退役，这个开关不再有任何作用
+            echo "提示: --no-classic 已废弃（classic 前端已退役），忽略该参数"
             shift
             ;;
         --target)
@@ -42,22 +41,18 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "选项:"
             echo "  --skip-frontend     跳过前端构建（使用已有的 dist，缺失时建占位）"
-            echo "  --no-classic        跳过 web/classic（默认两份都建；上游运行时默认 theme=classic）"
             echo "  --target OS         交叉编译目标系统（linux/darwin），默认当前系统"
             echo "  --arch ARCH         目标架构（amd64/arm64），默认 amd64"
             echo "  -h, --help          显示帮助"
             echo ""
-            echo "前端架构（上游 v1.0 后）:"
-            echo "  web/default/        新前端（React 19 + Rsbuild + Base UI），含 huanxing admin-tokens 移植"
-            echo "  web/classic/        旧前端（React 18 + Vite + Semi Design），huanxing token UI 完整保留"
-            echo "  main.go 用 //go:embed web/{default,classic}/dist 嵌入两份"
-            echo "  上游运行时默认 theme=classic，admin 在 System Settings → Frontend 可切到 default"
+            echo "前端架构:"
+            echo "  web/                唯一前端（React 19 + Rsbuild + Base UI），含 huanxing admin-tokens 定制"
+            echo "  main.go 用 //go:embed web/dist 嵌入"
             echo ""
             echo "示例:"
-            echo "  ./build.sh                              # 完整构建（default + classic + 后端），当前平台"
-            echo "  ./build.sh --no-classic                 # 仅 default 前端 + 后端（确认全用 default theme 时）"
+            echo "  ./build.sh                              # 完整构建（前端 + 后端），当前平台"
             echo "  ./build.sh --skip-frontend              # 仅编译 Go 后端"
-            echo "  ./build.sh --target linux               # 交叉编译 Linux amd64（含两套前端）"
+            echo "  ./build.sh --target linux               # 交叉编译 Linux amd64"
             echo "  ./build.sh --target linux --arch arm64  # 交叉编译 Linux arm64"
             exit 0
             ;;
@@ -94,34 +89,19 @@ if [ "$SKIP_FRONTEND" = false ]; then
         exit 1
     fi
 
-    echo "  → web/default ..."
-    (cd web/default && (bun install --frozen-lockfile 2>/dev/null || bun install))
-    (cd web/default && bun run build)
-    if [ ! -d "web/default/dist" ]; then
-        echo "错误: web/default/dist 不存在，前端构建失败"
+    echo "  → web ..."
+    (cd web && (bun install --frozen-lockfile 2>/dev/null || bun install))
+    (cd web && bun run build)
+    if [ ! -d "web/dist" ]; then
+        echo "错误: web/dist 不存在，前端构建失败"
         exit 1
-    fi
-
-    if [ "$BUILD_CLASSIC" = true ]; then
-        echo "  → web/classic ..."
-        (cd web/classic && (bun install --frozen-lockfile 2>/dev/null || bun install))
-        (cd web/classic && bun run build)
-        if [ ! -d "web/classic/dist" ]; then
-            echo "错误: web/classic/dist 不存在，前端构建失败"
-            exit 1
-        fi
-    else
-        # main.go 中 //go:embed web/classic/dist 必须有目标，否则 go build 失败
-        ensure_placeholder_dist "web/classic/dist"
-        echo "  → web/classic（占位，--no-classic 已开；上游默认 theme=classic，需到 System Settings 切到 default）"
     fi
     echo "  前端构建完成 ✓"
 else
     echo ""
     echo "[1/2] 跳过前端构建"
     # //go:embed 目标必须存在，缺失时建占位
-    ensure_placeholder_dist "web/default/dist"
-    ensure_placeholder_dist "web/classic/dist"
+    ensure_placeholder_dist "web/dist"
 fi
 
 # ========== 2. Go 后端编译 ==========
