@@ -2,6 +2,7 @@ package minimax
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,40 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestConvertAudioSpeechSeparatesAudioCodecFromMiniMaxTransport(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	info := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeAudioSpeech,
+		OriginModelName: "speech-01-turbo",
+	}
+	request := dto.AudioRequest{
+		Model:          "speech-01-turbo",
+		Input:          "唤星语音发布门真实请求。",
+		Voice:          "male-qn-qingse",
+		ResponseFormat: "mp3",
+	}
+
+	body, err := (&Adaptor{}).ConvertAudioRequest(context, info, request)
+	require.NoError(t, err)
+	payloadBytes, err := io.ReadAll(body)
+	require.NoError(t, err)
+	var payload MiniMaxTTSRequest
+	require.NoError(t, json.Unmarshal(payloadBytes, &payload))
+
+	require.NotNil(t, payload.AudioSetting)
+	assert.Equal(t, "mp3", payload.AudioSetting.Format)
+	assert.Equal(t, "url", payload.OutputFormat)
+	got, exists := context.Get("response_format")
+	require.True(t, exists)
+	assert.Equal(t, "url", got)
+}
 
 func TestGetRequestURLForImageGeneration(t *testing.T) {
 	t.Parallel()
