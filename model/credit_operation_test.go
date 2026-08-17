@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"testing"
@@ -121,14 +122,36 @@ func TestWalletRevokeInsufficientIsTerminalAndPersisted(t *testing.T) {
 
 func TestWalletGrantOverflowIsTerminal(t *testing.T) {
 	truncateTables(t)
-	seedCreditUser(t, 7005, common.MaxQuota-1)
+	// users.quota 是 64 位列，溢出守卫只对 int64 回绕生效：贴顶再发 1 积分
+	//（500000 quota）必然回绕，宁可终局失败也不做环绕写入把余额变成负数。
+	seedCreditUser(t, 7005, math.MaxInt64-400000)
 
 	outcome, err := ExecuteCreditOperation("evt-overflow", walletGrantRequest(7005, "1"))
 	require.Nil(t, err)
 	require.Equal(t, CreditOperationStatusFailed, outcome.Operation.Status)
 	assert.Equal(t, CreditFailureWalletOverflow, outcome.Operation.FailureCode)
-	// 宁可终局失败也不做环绕写入把余额变成负数
-	assert.Equal(t, common.MaxQuota-1, walletQuotaOf(t, 7005))
+	assert.Equal(t, math.MaxInt64-400000, walletQuotaOf(t, 7005))
+}
+
+// 回归：余额超过 int32 上限不是溢出（2026-08-17 主账号 2,500,915,158 quota
+// 被旧守卫误判溢出，一切钱包扣费 500）。超过 MaxInt32 的发放与扣减都必须成功。
+func TestWalletOperationAboveInt32CeilingIsAllowed(t *testing.T) {
+	truncateTables(t)
+	seedCreditUser(t, 7015, 2500000000) // 5000 积分，已越过 int32 上限
+
+	grant, err := ExecuteCreditOperation("evt-above-int32-grant", walletGrantRequest(7015, "1"))
+	require.Nil(t, err)
+	require.Equal(t, CreditOperationStatusSucceeded, grant.Operation.Status)
+	assert.Equal(t, 2500500000, walletQuotaOf(t, 7015))
+
+	revoke, err := ExecuteCreditOperation("evt-above-int32-revoke", &dto.CreditOperationRequest{
+		OperationType: CreditOperationWalletRevoke,
+		NewApiUserId:  7015,
+		CreditAmount:  "2",
+	})
+	require.Nil(t, err)
+	require.Equal(t, CreditOperationStatusSucceeded, revoke.Operation.Status)
+	assert.Equal(t, 2499500000, walletQuotaOf(t, 7015))
 }
 
 // 瞬时/请求级失败不落库，保证 GET 404 == 这次操作确定没有发生。

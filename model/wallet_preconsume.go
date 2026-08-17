@@ -49,7 +49,10 @@ func (r *WalletPreConsumeRecord) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
-// shiftWalletQuotaTx 以行锁原子调整钱包余额，余额永不为负、永不越过存储上限。
+// shiftWalletQuotaTx 以行锁原子调整钱包余额，余额永不为负、加法永不回绕。
+// users.quota 是 64 位列，int32 不是这里的上限（2026-08-17 实测主账号曾合法
+// 持有 2,500,915,158 quota；当时误用 common.MaxQuota 作上限，把该账号一切
+// 钱包扣费判成溢出，全部 500）。
 func shiftWalletQuotaTx(tx *gorm.DB, userId int, delta int64) error {
 	if delta == 0 {
 		return nil
@@ -58,13 +61,12 @@ func shiftWalletQuotaTx(tx *gorm.DB, userId int, delta int64) error {
 	if err := lockForUpdate(tx).Where("id = ?", userId).First(&user).Error; err != nil {
 		return err
 	}
-	target := int64(user.Quota) + delta
-	if target < 0 {
+	target, overflow := common.WalletQuotaTarget(int64(user.Quota), delta)
+	if !overflow && target < 0 {
 		return fmt.Errorf("%w: have %d, need %d", ErrWalletQuotaInsufficient, user.Quota, -delta)
 	}
-	if target > int64(common.MaxQuota) {
-		// users.quota 是 32 位整数列，环绕写入会把余额变成负数。
-		return fmt.Errorf("wallet quota would overflow the storage ceiling (current %d, delta %d)", user.Quota, delta)
+	if overflow {
+		return fmt.Errorf("wallet quota would overflow int64 storage (current %d, delta %d)", user.Quota, delta)
 	}
 	return tx.Model(&User{}).Where("id = ?", userId).Update("quota", target).Error
 }

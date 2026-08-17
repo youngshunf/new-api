@@ -8,13 +8,29 @@ import (
 )
 
 // Quota conversions are centralized here so every billing path shares one
-// saturation + logging policy. Quota columns (user/token/log) are 32-bit
-// integers in the database, so an oversized product must clamp to the int32
-// range instead of wrapping around and turning a charge into a credit.
+// saturation + logging policy. Per-request amounts are bounded by int32
+// because the per-request columns (logs.quota, tokens.remain_quota) are
+// 32-bit integers, so an oversized product must clamp to the int32 range
+// instead of wrapping around and turning a charge into a credit.
+//
+// 注意：users.quota（永久钱包余额）不受这个 int32 上限约束——生产 PostgreSQL
+// 里它是 64 位列，余额合法地可以超过 MaxInt32（实测 2,500,915,158）。
+// 钱包余额的守卫只做 int64 防回绕，见 WalletQuotaTarget。
 const (
 	MaxQuota = math.MaxInt32
 	MinQuota = math.MinInt32
 )
+
+// WalletQuotaTarget 返回钱包余额 current+delta 的目标值。
+// users.quota 是 64 位列，唯一要防的是 int64 加法回绕（Go 有符号溢出是定义
+// 良好的回绕，因此用方向比较判定），不做任何业务上限截断。
+func WalletQuotaTarget(current, delta int64) (target int64, overflow bool) {
+	target = current + delta
+	if (delta > 0 && target < current) || (delta < 0 && target > current) {
+		return 0, true
+	}
+	return target, false
+}
 
 // QuotaClampKind identifies why a quota conversion had to be saturated.
 type QuotaClampKind string

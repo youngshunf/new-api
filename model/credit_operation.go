@@ -496,18 +496,18 @@ func adjustWalletQuotaTx(tx *gorm.DB, userId int, delta int64) error {
 		return err
 	}
 	current := int64(user.Quota)
-	target := current + delta
-	if target < 0 {
+	target, overflow := common.WalletQuotaTarget(current, delta)
+	if !overflow && target < 0 {
 		return terminalFailure(CreditFailureWalletInsufficient,
 			"wallet has %s credits, cannot revoke %s",
 			common.FormatQuotaAsCredits(current), common.FormatQuotaAsCredits(-delta))
 	}
-	// users.quota 是 32 位整数列；溢出会把一次发放变成负余额，
-	// 因此宁可终局失败，也不做环绕写入。
-	if target > int64(common.MaxQuota) {
+	// users.quota 是 64 位列，int32 不是这里的上限（2026-08-17 实测主账号曾合法
+	// 持有 2,500,915,158 quota，误用 common.MaxQuota 曾把该账号一切钱包操作判成
+	// 溢出）；这里只防 int64 加法回绕。
+	if overflow {
 		return terminalFailure(CreditFailureWalletOverflow,
-			"wallet would exceed the storage ceiling of %s credits (current %s, delta %s)",
-			common.FormatQuotaAsCredits(int64(common.MaxQuota)),
+			"wallet grant would overflow int64 storage (current %s, delta %s)",
 			common.FormatQuotaAsCredits(current),
 			common.FormatQuotaAsCredits(delta))
 	}
