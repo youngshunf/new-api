@@ -1,14 +1,18 @@
 package controller
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -169,6 +173,21 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
+	// 状态码 200 不足以说明拿到的是视频：实测有上游（内部转发到 LiteLLM 的渠道）以
+	// 200 + Content-Type: video/mp4 把 22 字节的 {"detail":"Not Found"} 原样回来。
+	// 只判状态码会把这段 JSON 当视频交给客户端，客户端把它入桶后得到一个打不开的产物。
+	// 预读一小段先判掉，再把预读内容与剩余流一起转发，避免把整个视频读进内存。
+	body := bufio.NewReaderSize(resp.Body, videoErrorBodySniffLimit)
+	head, peekErr := body.Peek(videoErrorBodySniffLimit)
+	if (peekErr == nil || errors.Is(peekErr, io.EOF)) && looksLikeUpstreamErrorBody(head) {
+		logger.LogError(c.Request.Context(), fmt.Sprintf(
+			"Upstream returned an error body as video content for %s (%d bytes): %s",
+			videoURL, len(head), string(head)))
+		videoProxyError(c, http.StatusBadGateway, "server_error",
+			"Upstream returned an error body instead of video content")
+		return
+	}
+
 	for key, values := range resp.Header {
 		for _, value := range values {
 			c.Writer.Header().Add(key, value)
@@ -177,9 +196,41 @@ func VideoProxy(c *gin.Context) {
 
 	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
 	c.Writer.WriteHeader(resp.StatusCode)
-	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
+	if _, err = io.Copy(c.Writer, body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
 	}
+}
+
+// videoErrorBodySniffLimit 是判定上游错误体时最多预读的字节数。真实出片远大于该阈值，
+// 所以「读到 EOF 时总长仍小于它」本身就是一条判据：正常视频不可能这么短。
+const videoErrorBodySniffLimit = 8 << 10
+
+// looksLikeUpstreamErrorBody 判断一段完整的响应体是上游的文本错误体而非视频内容。
+//
+// 三重叠加，只打击明确的文本错误体：读到 EOF 时总长小于阈值 + 整段合法 UTF-8 +
+// trim 后以 `{` 或 `<` 开头。**认不出的二进制一律放行**——不认识的容器格式不等于
+// 不是视频，硬拒会把本来能用的出片挡掉，那比透传一个坏文件更糟。
+func looksLikeUpstreamErrorBody(body []byte) bool {
+	// 读满了预读缓冲说明后面还有内容，不可能是一小段错误 JSON。
+	if len(body) == 0 || len(body) >= videoErrorBodySniffLimit {
+		return false
+	}
+	if !utf8.Valid(body) {
+		return false
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if trimmed[0] != '{' && trimmed[0] != '<' {
+		return false
+	}
+	// MP4/MOV 的前 4 字节是 box 长度、紧接着是 `ftyp`，理论上长度字段可以恰好等于
+	// `{`。首字符判据挡不住这种巧合，这里再兜一层：带 ftyp 的一律当视频放行。
+	if len(body) >= 8 && bytes.Contains(body[:8], []byte("ftyp")) {
+		return false
+	}
+	return true
 }
 
 func writeVideoDataURL(c *gin.Context, dataURL string) error {
