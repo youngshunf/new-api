@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -51,7 +52,12 @@ type responseTask struct {
 	Seconds            string `json:"seconds,omitempty"`
 	Size               string `json:"size,omitempty"`
 	RemixedFromVideoID string `json:"remixed_from_video_id,omitempty"`
-	Error              *struct {
+	// VideoID / Url 服务于「不实现 OpenAI /v1/videos/{id}/content 下载端点」的上游：
+	// 它们把出片 URL 直接放在查询响应里，并要求用 video_id（而非 task_id）查询。
+	// 真 OpenAI Sora 不返回这两个字段，留空即回落原有的代理下载路径，行为不变。
+	VideoID string `json:"video_id,omitempty"`
+	Url     string `json:"url,omitempty"`
+	Error   *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
@@ -263,19 +269,56 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	uri := fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskID)
-
-	req, err := http.NewRequest(http.MethodGet, uri, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+key)
-
 	client, err := service.GetHttpClientWithProxy(proxy)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
+
+	resp, err := fetchVideoTask(client, fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskID), key)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return resp, nil
+	}
+
+	// 有的上游（如 agnes-ai）不实现 OpenAI 的 `/v1/videos/{id}/content` 下载端点，而是把出片 URL
+	// 放在**自家查询端点**的响应里，且要求按 `video_id` 查询：
+	//
+	//   GET {base}/agnesapi?video_id=<video_id>   →  响应顶层 `url` 即出片地址
+	//
+	// 它的 `/v1/videos/{task_id}`（文档标注 legacy）只回 `video_id`、不回 `url`；若就此把 Url 留空，
+	// 上层会回落到 BuildProxyURL 生成的代理下载地址，而那个端点在这类上游上取不到文件。
+	// 因此：拿到 `video_id` 但没拿到 `url` 时改问自家端点。**真 OpenAI Sora 不返回 `video_id`
+	// 字段，不会走到这里**，原有行为不变。
+	payload, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, errors.Wrap(err, "read task response failed")
+	}
+	var probe responseTask
+	if err := common.Unmarshal(payload, &probe); err == nil &&
+		probe.Url == "" && probe.VideoID != "" {
+		uri := fmt.Sprintf("%s/agnesapi?video_id=%s", baseUrl, url.QueryEscape(probe.VideoID))
+		if alt, altErr := fetchVideoTask(client, uri, key); altErr == nil {
+			if alt.StatusCode == http.StatusOK {
+				return alt, nil
+			}
+			_ = alt.Body.Close()
+		}
+		// 取不到就沿用 legacy 回包，让上层照原逻辑处理（宁可回落，不因兜底请求失败而中断轮询）
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(payload))
+	return resp, nil
+}
+
+// fetchVideoTask 发一次带 bearer 的 GET，用于任务查询（legacy 端点与上游自家端点共用）。
+func fetchVideoTask(client *http.Client, uri, key string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
 	return client.Do(req)
 }
 
@@ -304,7 +347,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		taskResult.Status = model.TaskStatusInProgress
 	case "completed":
 		taskResult.Status = model.TaskStatusSuccess
-		// Url intentionally left empty — the caller constructs the proxy URL using the public task ID
+		// 上游若在响应里直接给出出片 URL（不实现 OpenAI 的 /content 下载端点的那类），就用它——
+		// 上层据此把 ResultURL 存成真实地址，客户端直接下载。留空才回落到代理下载地址
+		// （真 OpenAI Sora 走这条：它没有 url 字段，必须用 /v1/videos/{id}/content 取文件）。
+		taskResult.Url = resTask.Url
 	case "failed", "cancelled":
 		taskResult.Status = model.TaskStatusFailure
 		if resTask.Error != nil {
