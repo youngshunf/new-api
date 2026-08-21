@@ -514,6 +514,26 @@ func adjustWalletQuotaTx(tx *gorm.DB, userId int, delta int64) error {
 	return tx.Model(&User{}).Where("id = ?", userId).Update("quota", target).Error
 }
 
+// projectSubscriptionCycle 把周期锚点向前推到**包含 now 的那一期**，返回该期的
+// 起点与下次重置时刻（不再重置时为 0）。
+//
+// 这是 realignSubscriptionCycleTx 的只读孪生：同一套推进规则，但**不写库**——
+// 快照接口不得在读路径上产生副作用。停机跨过多个周期时必须一路推到当前期，
+// 只前移一期会得到一个仍然在过去的「下次重置时刻」。
+func projectSubscriptionCycle(sub *UserSubscription, now int64) (cycleStart int64, nextReset int64, err error) {
+	base := time.Unix(sub.NextResetTime, 0)
+	for {
+		next, err := nextSubscriptionResetTime(DB, sub, base)
+		if err != nil {
+			return 0, 0, err
+		}
+		if next <= 0 || next > now {
+			return base.Unix(), next, nil
+		}
+		base = time.Unix(next, 0)
+	}
+}
+
 // BuildCreditAccount 组装 NewAPI 权威积分账户快照。
 // 余额直接读数据库（不读缓存），并对「到点但维护任务尚未跑」的订阅做只读的
 // 清零投影，使返回值等于此刻真实可用额度。
@@ -545,10 +565,18 @@ func BuildCreditAccount(userId int) (*dto.CreditAccount, *CreditOperationError) 
 		if cycleStart <= 0 {
 			cycleStart = sub.StartTime
 		}
-		// 到点未跑的重置：只读投影，不写库。
+		nextReset := sub.NextResetTime
+		// 到点未跑的重置：只读投影，不写库。周期锚点要推进到**包含 now 的那一期**
+		// （停机跨过多期时不能只前移一期），下次重置也要跟着前移——否则快照会给出
+		// 「本期起点在未来、重置时刻在过去」这种自相矛盾的窗口。
 		if sub.Status == SubscriptionStatusActive && sub.NextResetTime > 0 && sub.NextResetTime <= now {
 			used = 0
-			cycleStart = sub.NextResetTime
+			start, next, err := projectSubscriptionCycle(&sub, now)
+			if err != nil {
+				return nil, creditError(http.StatusServiceUnavailable, CreditErrorStoreUnavailable, true, "credit store unavailable: %s", err.Error())
+			}
+			cycleStart = start
+			nextReset = next
 		}
 		remaining := int64(0)
 		if sub.AmountTotal > 0 {
@@ -565,6 +593,11 @@ func BuildCreditAccount(userId int) (*dto.CreditAccount, *CreditOperationError) 
 			formatted := time.Unix(sub.EndTime, 0).UTC().Format(time.RFC3339)
 			cycleEnd = &formatted
 		}
+		var nextResetAt *string
+		if nextReset > 0 {
+			formatted := time.Unix(nextReset, 0).UTC().Format(time.RFC3339)
+			nextResetAt = &formatted
+		}
 		views = append(views, dto.CreditSubscriptionView{
 			ExternalSubscriptionId: sub.CreditAccountSubscriptionRef(),
 			Status:                 sub.Status,
@@ -572,6 +605,7 @@ func BuildCreditAccount(userId int) (*dto.CreditAccount, *CreditOperationError) 
 			CycleUsedCredits:       common.FormatQuotaAsCredits(used),
 			CycleRemainingCredits:  common.FormatQuotaAsCredits(remaining),
 			CycleStartAt:           time.Unix(cycleStart, 0).UTC().Format(time.RFC3339),
+			NextResetAt:            nextResetAt,
 			CycleEndAt:             cycleEnd,
 		})
 	}

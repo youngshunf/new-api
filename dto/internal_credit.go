@@ -33,6 +33,16 @@ type CreditOperationRequest struct {
 }
 
 // CreditSubscriptionView 是一条订阅投影的权威快照。
+//
+// **三个时间字段各管各的，不要互相代用**（消费方按此渲染「本周期 X → Y」与「Z 重置」）：
+//
+//   - CycleStartAt  当前这一期的起点（LastResetTime，含「到点未跑」的只读推进）；
+//   - NextResetAt   当前这一期的**终点**，也就是额度清零重置的时刻（NextResetTime）；
+//   - CycleEndAt    **合同终止时刻**（EndTime），不是周期终点。免费合同无限期循环，此处为 null。
+//
+// 历史上只有 CycleEndAt，消费方拿它当「周期结束」用，于是免费合同永远拿到 null、
+// 付费合同拿到的又是合同末日而非本期末日——两种都渲染不出正确的重置日。
+// NextResetAt 就是为补这个缺口而加的，展示「重置日」一律用它。
 type CreditSubscriptionView struct {
 	ExternalSubscriptionId string  `json:"external_subscription_id"`
 	Status                 string  `json:"status"`
@@ -40,7 +50,10 @@ type CreditSubscriptionView struct {
 	CycleUsedCredits       string  `json:"cycle_used_credits"`
 	CycleRemainingCredits  string  `json:"cycle_remaining_credits"`
 	CycleStartAt           string  `json:"cycle_start_at"`
-	CycleEndAt             *string `json:"cycle_end_at"`
+	// NextResetAt 本期额度清零重置的时刻；不再重置（已到合同末期）时为 null。
+	NextResetAt *string `json:"next_reset_at"`
+	// CycleEndAt 合同终止时刻，**不是**本周期终点；免费合同无限期循环时为 null。
+	CycleEndAt *string `json:"cycle_end_at"`
 }
 
 // CreditWalletView 是永久钱包的权威快照。

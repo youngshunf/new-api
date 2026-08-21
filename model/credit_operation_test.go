@@ -333,4 +333,81 @@ func TestCreditAccountSnapshotReportsAuthoritativeBalances(t *testing.T) {
 	// 钱包 3 + 订阅剩余 6 = 9，绝不是 quota - used_quota 那套算法
 	assert.Equal(t, "9", account.TotalAvailableCredits)
 	assert.NotEmpty(t, account.MeasuredAt)
+	// next_reset_at 是「本期额度何时清零」，与 cycle_end_at（合同终止）分开取值。
+	require.NotNil(t, account.Subscriptions[0].NextResetAt)
+	assert.Equal(t,
+		time.Unix(now+CycleSecondsFixed, 0).UTC().Format(time.RFC3339),
+		*account.Subscriptions[0].NextResetAt)
+}
+
+// 免费合同无限期循环：合同没有终止时刻（cycle_end_at 为 null），但每 30 天照常重置，
+// 所以 next_reset_at 必须有值。这两个字段被当成同一个用，正是「重置日永远显示不出来」的成因。
+func TestCreditAccountSnapshotSeparatesNextResetFromContractEnd(t *testing.T) {
+	truncateTables(t)
+	seedCreditUser(t, 7012, 0)
+
+	now := GetDBTimestamp()
+	require.NoError(t, DB.Create(&UserSubscription{
+		UserId:                 7012,
+		AmountTotal:            50000000, // 100 积分
+		AmountUsed:             0,
+		StartTime:              now - 3600,
+		EndTime:                0, // 免费合同：无商业到期
+		Status:                 SubscriptionStatusActive,
+		Source:                 SubscriptionSourceCloudContract,
+		ExternalSubscriptionId: "contract-free",
+		CycleSeconds:           CycleSecondsFixed,
+		LastResetTime:          now - 3600,
+		NextResetTime:          now + CycleSecondsFixed,
+	}).Error)
+
+	account, err := BuildCreditAccount(7012)
+	require.Nil(t, err)
+	require.Len(t, account.Subscriptions, 1)
+	assert.Nil(t, account.Subscriptions[0].CycleEndAt, "免费合同无终止时刻")
+	require.NotNil(t, account.Subscriptions[0].NextResetAt, "但它每 30 天照常重置")
+	assert.Equal(t,
+		time.Unix(now+CycleSecondsFixed, 0).UTC().Format(time.RFC3339),
+		*account.Subscriptions[0].NextResetAt)
+}
+
+// 维护任务停跑多期后，只读投影必须一路推进到「包含此刻的那一期」：
+// 只前移一期会得到一个仍在过去的 next_reset_at，UI 上就是「重置日早已过去」。
+func TestCreditAccountSnapshotProjectsAcrossMissedCycles(t *testing.T) {
+	truncateTables(t)
+	seedCreditUser(t, 7013, 0)
+
+	now := GetDBTimestamp()
+	// 锚点停在 3 期之前，期间维护任务一次都没跑。
+	lastReset := now - 3*CycleSecondsFixed - 100
+	require.NoError(t, DB.Create(&UserSubscription{
+		UserId:                 7013,
+		AmountTotal:            50000000,
+		AmountUsed:             49000000, // 上一期几乎用满，投影后必须清零
+		StartTime:              lastReset,
+		EndTime:                0,
+		Status:                 SubscriptionStatusActive,
+		Source:                 SubscriptionSourceCloudContract,
+		ExternalSubscriptionId: "contract-stale",
+		CycleSeconds:           CycleSecondsFixed,
+		LastResetTime:          lastReset,
+		NextResetTime:          lastReset + CycleSecondsFixed,
+	}).Error)
+
+	account, err := BuildCreditAccount(7013)
+	require.Nil(t, err)
+	require.Len(t, account.Subscriptions, 1)
+	view := account.Subscriptions[0]
+	assert.Equal(t, "0", view.CycleUsedCredits, "跨期后本期用量清零")
+	assert.Equal(t, "100", view.CycleRemainingCredits)
+
+	require.NotNil(t, view.NextResetAt)
+	nextReset, parseErr := time.Parse(time.RFC3339, *view.NextResetAt)
+	require.NoError(t, parseErr)
+	assert.Greater(t, nextReset.Unix(), now, "重置时刻必须在未来，不能停在过去某一期")
+
+	cycleStart, parseErr := time.Parse(time.RFC3339, view.CycleStartAt)
+	require.NoError(t, parseErr)
+	assert.LessOrEqual(t, cycleStart.Unix(), now, "本期起点必须在此刻之前")
+	assert.Equal(t, CycleSecondsFixed, nextReset.Unix()-cycleStart.Unix(), "本期恰好一个周期长")
 }
