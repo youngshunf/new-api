@@ -30,6 +30,15 @@ func SetInternalRouter(router *gin.Engine) {
 		creditRouter.GET("/credit-consumption/:newapi_user_id", controller.GetCreditConsumptionSummary)
 	}
 
+	accountRouter := router.Group("/api/internal/v1")
+	accountRouter.Use(middleware.RouteTag("internal"))
+	accountRouter.Use(middleware.InternalServiceAuth(middleware.ScopeAccount))
+	accountRouter.Use(middleware.InternalServiceRateLimit(middleware.ScopeAccount))
+	{
+		accountRouter.POST("/accounts", controller.PostInternalAccount)
+		accountRouter.GET("/accounts/:newapi_user_id", controller.GetInternalAccount)
+	}
+
 	// LLM scope 的 group 在 S1-B/S1-C 落地库存与 Relay lease 接口时建立。
-	// 它必须是**独立 group**，不得复用上面那个 creditRouter。
+	// 它必须是**独立 group**，不得复用上面已有的 scope group。
 }

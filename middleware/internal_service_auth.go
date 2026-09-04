@@ -43,13 +43,16 @@ const (
 	ScopeCredit ServiceScope = "credit"
 	// ScopeLLM 是 LLM 库存与 Relay lease 接口：能签发可调模型的 Token。
 	ScopeLLM ServiceScope = "llm"
+	// ScopeAccount 是 Cloud 按 workspace 开通 NewAPI 账户的接口。
+	ScopeAccount ServiceScope = "account"
 )
 
 // knownServiceScopes 是配置解析时的白名单。配置里出现名单外的 scope 会被跳过并告警，
 // 而不是当作某个已知 scope 处理——猜错的方向恰好是放大权限。
 var knownServiceScopes = map[ServiceScope]bool{
-	ScopeCredit: true,
-	ScopeLLM:    true,
+	ScopeCredit:  true,
+	ScopeLLM:     true,
+	ScopeAccount: true,
 }
 
 // InternalServiceTokensEnv 按 scope 声明服务凭据，形如 `credit:<token>,llm:<token>`；
@@ -71,6 +74,8 @@ const internalServiceIdentityKey = "internal_service_identity"
 
 // internalServiceScopeKey 是本次请求判权所用的 scope，用于日志与限流分桶。
 const internalServiceScopeKey = "internal_service_scope"
+
+const invalidServiceCredentialMessage = "invalid internal service credential"
 
 var (
 	internalServiceTokensOnce sync.Once
@@ -196,13 +201,13 @@ func newInternalServiceAuth(scope ServiceScope, tokens map[ServiceScope][]string
 		if len(allowed) == 0 {
 			// fail closed：本 scope 没有凭据就整条拒绝，绝不回落到别的 scope 的凭据。
 			AbortWithInternalServiceError(c, http.StatusUnauthorized, "invalid_service_credential",
-				"internal API scope `"+string(scope)+"` is not configured on this deployment", false)
+				invalidServiceCredentialMessage, false)
 			return
 		}
 		presented := bearerCredential(c)
 		if presented == "" {
 			AbortWithInternalServiceError(c, http.StatusUnauthorized, "invalid_service_credential",
-				"a service bearer token is required", false)
+				invalidServiceCredentialMessage, false)
 			return
 		}
 		for _, token := range allowed {
@@ -214,7 +219,7 @@ func newInternalServiceAuth(scope ServiceScope, tokens map[ServiceScope][]string
 			}
 		}
 		AbortWithInternalServiceError(c, http.StatusUnauthorized, "invalid_service_credential",
-			"service bearer token is not recognized for scope `"+string(scope)+"`", false)
+			invalidServiceCredentialMessage, false)
 	}
 }
 
