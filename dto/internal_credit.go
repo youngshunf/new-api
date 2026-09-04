@@ -85,8 +85,12 @@ type CreditOperationResult struct {
 	Account          *CreditAccount `json:"account,omitempty"`
 }
 
-// CreditErrorResponse 是内部 API 的统一错误体。
-type CreditErrorResponse struct {
+// InternalErrorResponse 是内部服务通道 /api/internal/v1 的统一错误体。
+//
+// 它是**通道级**的，不属于 credit 这一个 scope：鉴权、限流这类错误发生在任何 scope 的路由上，
+// 用 credit 命名会让新增 scope 的人以为要另造一个错误体。
+// ⚠️ 只改 Go 类型名，四个 json tag 不动——它们是 wire 契约，云端按名解析。
+type InternalErrorResponse struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	TraceId   string `json:"trace_id"`

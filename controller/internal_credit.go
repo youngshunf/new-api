@@ -69,7 +69,7 @@ func decodeCreditOperationRequest(c *gin.Context) (*dto.CreditOperationRequest, 
 }
 
 func abortWithCreditOperationError(c *gin.Context, err *model.CreditOperationError) {
-	middleware.AbortWithCreditError(c, err.HTTPStatus, err.Code, err.Message, err.Retryable)
+	middleware.AbortWithInternalServiceError(c, err.HTTPStatus, err.Code, err.Message, err.Retryable)
 }
 
 // auditCreditOperation 记录履约审计日志。
@@ -86,7 +86,7 @@ func PutCreditOperation(c *gin.Context) {
 	eventId := c.Param("event_id")
 	req, decodeErr := decodeCreditOperationRequest(c)
 	if decodeErr != nil {
-		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest, decodeErr.Error(), false)
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest, decodeErr.Error(), false)
 		return
 	}
 	outcome, opErr := model.ExecuteCreditOperation(eventId, req)
@@ -129,7 +129,7 @@ func GetCreditOperation(c *gin.Context) {
 func GetCreditAccount(c *gin.Context) {
 	userId, err := strconv.Atoi(strings.TrimSpace(c.Param("newapi_user_id")))
 	if err != nil || userId <= 0 {
-		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
 			"newapi_user_id must be a positive integer", false)
 		return
 	}
@@ -153,14 +153,14 @@ func GetCreditAccount(c *gin.Context) {
 func GetCreditConsumptionSummary(c *gin.Context) {
 	userId, err := strconv.Atoi(strings.TrimSpace(c.Param("newapi_user_id")))
 	if err != nil || userId <= 0 {
-		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
 			"newapi_user_id must be a positive integer", false)
 		return
 	}
 	summary, summaryErr := model.SummarizeCreditConsumption(userId)
 	if summaryErr != nil {
 		logger.LogWarn(c, fmt.Sprintf("summarize consumption failed user=%d: %s", userId, summaryErr.Error()))
-		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
 			summaryErr.Error(), true)
 		return
 	}
@@ -187,7 +187,7 @@ func GetCreditUsage(c *gin.Context) {
 	result, err := model.ListCreditUsage(userId, start, end, page, size)
 	if err != nil {
 		logger.LogWarn(c, fmt.Sprintf("list credit usage failed user=%d: %s", userId, err.Error()))
-		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
 			err.Error(), true)
 		return
 	}
@@ -207,7 +207,7 @@ func GetCreditUsageDaily(c *gin.Context) {
 	}
 	tzOffset, err := strconv.Atoi(c.DefaultQuery("tz_offset_minutes", "0"))
 	if err != nil || tzOffset < -720 || tzOffset > 840 {
-		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
 			"tz_offset_minutes must be an integer within [-720, 840]", false)
 		return
 	}
@@ -215,7 +215,7 @@ func GetCreditUsageDaily(c *gin.Context) {
 	result, summaryErr := model.SummarizeCreditUsageDaily(userId, parseInt64Query(c, "start"), parseInt64Query(c, "end"), tzOffset)
 	if summaryErr != nil {
 		logger.LogWarn(c, fmt.Sprintf("summarize daily usage failed user=%d: %s", userId, summaryErr.Error()))
-		middleware.AbortWithCreditError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
 			summaryErr.Error(), true)
 		return
 	}
@@ -226,7 +226,7 @@ func GetCreditUsageDaily(c *gin.Context) {
 func parseInternalUserId(c *gin.Context) (int, bool) {
 	userId, err := strconv.Atoi(strings.TrimSpace(c.Param("newapi_user_id")))
 	if err != nil || userId <= 0 {
-		middleware.AbortWithCreditError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
 			"newapi_user_id must be a positive integer", false)
 		return 0, false
 	}
