@@ -1,12 +1,13 @@
 package middleware
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,11 +72,11 @@ func TestScopeWithoutCredentialFailsClosed(t *testing.T) {
 	creditToken := testToken("credit")
 	tokens := map[ServiceScope][]string{ScopeCredit: {creditToken}}
 
-	recorder, reached := runScopedAuth(t, ScopeLLM, tokens, "Bearer "+creditToken)
+	recorder, reached := runScopedAuth(t, ScopeAccount, tokens, "Bearer "+creditToken)
 
 	assert.False(t, reached)
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "llm")
+	assert.Contains(t, recorder.Body.String(), invalidServiceCredentialMessage)
 }
 
 func TestValidCredentialPassesAndRecordsIdentityAndScope(t *testing.T) {
@@ -117,7 +118,43 @@ func TestMalformedAuthorizationIsRejected(t *testing.T) {
 			recorder, reached := runScopedAuth(t, ScopeCredit, tokens, header)
 			assert.False(t, reached)
 			assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+			assert.Contains(t, recorder.Body.String(), invalidServiceCredentialMessage)
+			assert.NotContains(t, recorder.Body.String(), "credit")
 		})
+	}
+}
+
+func TestInvalidServiceCredentialFailuresShareSameWireResponse(t *testing.T) {
+	token := testToken("credit")
+	cases := []struct {
+		name   string
+		tokens map[ServiceScope][]string
+		header string
+	}{
+		{name: "scope 未配置", tokens: map[ServiceScope][]string{ScopeCredit: {token}}, header: "Bearer " + token},
+		{name: "缺 token", tokens: map[ServiceScope][]string{ScopeAccount: {testToken("account")}}},
+		{name: "token 不属于本 scope", tokens: map[ServiceScope][]string{ScopeAccount: {testToken("account")}}, header: "Bearer " + token},
+	}
+
+	var bodies []map[string]any
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder, reached := runScopedAuth(t, ScopeAccount, testCase.tokens, testCase.header)
+			require.False(t, reached)
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
+			var body map[string]any
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
+			bodies = append(bodies, body)
+		})
+	}
+
+	require.Len(t, bodies, len(cases))
+	first := bodies[0]
+	for _, body := range bodies[1:] {
+		assert.Equal(t, first["code"], body["code"])
+		assert.Equal(t, first["message"], body["message"])
+		assert.Equal(t, first["retryable"], body["retryable"])
+		assert.True(t, slices.Contains([]any{nil, ""}, body["trace_id"]))
 	}
 }
 
@@ -125,7 +162,7 @@ func TestErrorBodyKeepsWireFieldNames(t *testing.T) {
 	recorder, _ := runScopedAuth(t, ScopeCredit, map[ServiceScope][]string{}, "")
 
 	var body map[string]any
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
 	for _, field := range []string{"code", "message", "trace_id", "retryable"} {
 		assert.Contains(t, body, field, "wire 字段名是契约，改 Go 类型名不得动它")
 	}

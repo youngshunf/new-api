@@ -30,6 +30,15 @@ func SetInternalRouter(router *gin.Engine) {
 		creditRouter.GET("/credit-consumption/:newapi_user_id", controller.GetCreditConsumptionSummary)
 	}
 
+	accountRouter := router.Group("/api/internal/v1")
+	accountRouter.Use(middleware.RouteTag("internal"))
+	accountRouter.Use(middleware.InternalServiceAuth(middleware.ScopeAccount))
+	accountRouter.Use(middleware.InternalServiceRateLimit(middleware.ScopeAccount))
+	{
+		accountRouter.POST("/accounts", controller.PostInternalAccount)
+		accountRouter.GET("/accounts/:newapi_user_id", controller.GetInternalAccount)
+	}
+
 	// LLM scope：模型库存与 Relay lease（LLM 网关设计 §15.1）。
 	//
 	// 这是一个**独立 group**，与上面的 creditRouter 不共享任何中间件实例：

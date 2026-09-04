@@ -46,9 +46,9 @@ func internalErrorCode(t *testing.T, recorder *httptest.ResponseRecorder) string
 //
 // 复用 creditRouter 的话，下面两条 401 会当场变成「放行」——那正是 S1-A 分权改造要消除的形态。
 func TestInternalRouterKeepsLlmAndCreditInSeparateScopedGroups(t *testing.T) {
-	creditToken := internalServiceTestToken("credit")
-	llmToken := internalServiceTestToken("llm")
-	t.Setenv("INTERNAL_SERVICE_TOKENS", "credit:"+creditToken+",llm:"+llmToken)
+	credentials := internalServiceTestCredentials(t)
+	creditToken := credentials["credit"]
+	llmToken := credentials["llm"]
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
