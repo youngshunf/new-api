@@ -58,6 +58,7 @@ func TestMain(m *testing.M) {
 		&SubscriptionPreConsumeRecord{},
 		&WalletPreConsumeRecord{},
 		&CreditOperation{},
+		&InternalAccountProvision{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
 		&SystemInstance{},
@@ -95,6 +96,7 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM subscription_pre_consume_records")
 		DB.Exec("DELETE FROM wallet_pre_consume_records")
 		DB.Exec("DELETE FROM credit_operations")
+		DB.Exec("DELETE FROM internal_account_provisions")
 		DB.Exec("DELETE FROM perf_metrics")
 		DB.Exec("DELETE FROM system_instances")
 		DB.Exec("DELETE FROM system_task_locks")
