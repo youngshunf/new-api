@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/retrycontrol"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
@@ -50,6 +51,11 @@ func SetEventStreamHeaders(c *gin.Context) {
 
 	// 设置标志，表示头部已经设置过
 	c.Set("event_stream_headers_set", true)
+
+	// 流式响应的头在第一个字节落地时就冲刷出去，之后再改头表毫无效果。
+	// 这里是「响应即将开始」的唯一汇合点，重试控制头必须在此刻就位——
+	// 否则流式中断时 daemon 读不到 dispatch_state，只能按 unknown 处理。
+	retrycontrol.ArmStreamHeaders(c)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")

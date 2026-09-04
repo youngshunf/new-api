@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	"github.com/QuantumNous/new-api/pkg/retrycontrol"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -95,18 +96,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			// 重试控制（设计 §13.2）。判定载体是响应头，因此必须先写头再写 body：
+			// Go 在第一次写 body 时才冲刷头表，写反了这四个头一个都到不了 daemon。
+			control := retrycontrol.Resolve(c, retrycontrol.SurfaceRelay,
+				string(newAPIError.GetErrorCode()), newAPIError.StatusCode)
+			retrycontrol.WriteHeaders(c, control)
+			// body 副本只在「还有 body 位置可写」时附带。流式响应首帧之后没有这个
+			// 位置，那正是设计里「不能只放 body」那一段说的情形；此时判定全靠上面
+			// 那四个头。Written() 就是「有没有 body 位置」的判据。
+			bodyCopy := gin.H{}
+			if !c.Writer.Written() {
+				bodyCopy["retry_control"] = control
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
+				// websocket 已完成升级：响应头与 error body 都不再可写，
+				// 这条链路上重试控制无载体可用。
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"type":  "error",
-					"error": newAPIError.ToClaudeError(),
-				})
+				bodyCopy["type"] = "error"
+				bodyCopy["error"] = newAPIError.ToClaudeError()
+				c.JSON(newAPIError.StatusCode, bodyCopy)
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(),
-				})
+				bodyCopy["error"] = newAPIError.ToOpenAIError()
+				c.JSON(newAPIError.StatusCode, bodyCopy)
 			}
 		}
 	}()
@@ -559,20 +572,37 @@ func RelayTask(c *gin.Context) {
 		relayInfo.Action = action
 	}
 
+	// 异步任务幂等（设计 §13.3）。必须占在预扣费与上游发送**之前**：
+	// executeTaskSubmission 里 RelayTaskSubmit 第 7 步就开始扣费了，
+	// 放到那之后再判幂等，重复请求已经把钱扣掉了。
+	idempotency, replay, taskErr := beginTaskIdempotency(c, relayInfo)
+	if taskErr != nil {
+		respondTaskSubmissionError(c, taskErr)
+		return
+	}
+	if replay != nil {
+		presentTaskIdempotentReplay(c, relayInfo, replay)
+		return
+	}
+
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
+		idempotency.fail(c, taskErr)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
 	if taskErr := relay.ApplyOriginTaskAffinity(c, relayInfo); taskErr != nil {
+		idempotency.fail(c, taskErr)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
 
 	outcome, taskErr := executeTaskSubmission(c, relayInfo)
 	if taskErr != nil {
+		idempotency.fail(c, taskErr)
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
+	idempotency.succeed(c, outcome.Task.TaskID)
 	presentTaskSubmission(c, outcome)
 }
 
@@ -848,6 +878,9 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 
 func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 	newTaskPluginSubmitDiagnostics(c).presentError(taskErr)
+	// 插件自渲染的 error body 不经过 TaskError 序列化，所以重试控制头必须在
+	// 分叉之前就写好——否则插件路由上这四个头会整体缺席。
+	attachTaskRetryControl(c, taskErr)
 	if middleware.RespondTaskPluginError(c, taskErr) {
 		return
 	}
@@ -856,10 +889,23 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
+	attachTaskRetryControl(c, taskErr)
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 	}
 	c.JSON(taskErr.StatusCode, taskErr)
+}
+
+// attachTaskRetryControl 给异步任务链路的终局失败装上重试控制：
+// 四个响应头（daemon 的判定载体）+ error body 里的同值副本（给人看）。
+// 重复调用只算第一次，后续调用是幂等的空操作。
+func attachTaskRetryControl(c *gin.Context, taskErr *taskdto.TaskError) {
+	if taskErr == nil || taskErr.RetryControl != nil {
+		return
+	}
+	control := retrycontrol.Resolve(c, retrycontrol.SurfaceTask, taskErr.Code, taskErr.StatusCode)
+	retrycontrol.WriteHeaders(c, control)
+	taskErr.RetryControl = &control
 }
 
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskError, retryTimes int) bool {

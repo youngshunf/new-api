@@ -13,6 +13,7 @@ import (
 
 	common2 "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/retrycontrol"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -392,6 +393,9 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		targetHeader.Set(key, value)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	// gorilla 的拨号没有 httptrace 可挂，握手请求发没发出去无从分辨。
+	// 一律记 unknown：宁可少一次可安全重放的机会，也不能给出一个可能错的 not_dispatched。
+	retrycontrol.Tracker(c).MarkUninstrumentedAttempt()
 	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
 	if err != nil {
 		return nil, fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err)
@@ -518,6 +522,14 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		))
 	}
 
+	// 重试控制（设计 §13.2）：给出站请求挂上 httptrace。
+	// http.Client.Do 的错误值分不开「拨号失败（确实没发出）」与「写完请求等响应
+	// 超时（已经发出）」，而这两者对 daemon 是能不能重放的分水岭。
+	// WroteHeaders 是唯一能把它们分开的正面信号。
+	dispatchTracker := retrycontrol.Tracker(c)
+	dispatchTracker.MarkInstrumentedAttempt()
+	req = retrycontrol.TraceRequest(req, dispatchTracker)
+
 	var stopPinger context.CancelFunc
 	var pingerDone <-chan struct{}
 	if info.IsStream {
@@ -545,6 +557,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
+	}
+	// 拿到响应（任何状态码）＝上游确实处理过这个请求，dispatch_state 升到 dispatched。
+	dispatchTracker.MarkResponseReceived()
+	if info.IsStream {
+		// 头还没冲刷时把兜底的 unknown 提升成更精确的 dispatched。
+		retrycontrol.ArmStreamHeaders(c)
 	}
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)

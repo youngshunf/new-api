@@ -2,6 +2,8 @@ package dto
 
 import (
 	"encoding/json"
+
+	"github.com/QuantumNous/new-api/pkg/retrycontrol"
 )
 
 type TaskError struct {
@@ -11,6 +13,10 @@ type TaskError struct {
 	StatusCode int    `json:"-"`
 	LocalError bool   `json:"-"`
 	Error      error  `json:"-"`
+	// RetryControl 是 LLM 网关重试控制契约（设计 §13.2）在错误 body 里的
+	// **可读副本**：给人和日志看。daemon 的 failover 判定只读同名的四个
+	// X-Hasn-* 响应头，不读这里。omitempty 保证老客户端的响应形状不变。
+	RetryControl *retrycontrol.Control `json:"retry_control,omitempty"`
 }
 
 type TaskData interface {
