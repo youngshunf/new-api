@@ -21,10 +21,10 @@ import (
 
 // CreditUsageEntry 是一条消费流水（面向用户展示）。
 type CreditUsageEntry struct {
-	Id        int    `json:"id"`
-	CreatedAt int64  `json:"created_at"`
-	ModelName string `json:"model_name"`
-	TokenName string `json:"token_name"`
+	Id          int    `json:"id"`
+	CreatedTime int64  `json:"created_time"`
+	ModelName   string `json:"model_name"`
+	TokenName   string `json:"token_name"`
 	// Credits 是本次消费的积分数（正数表示消耗）
 	Credits          string `json:"credits"`
 	PromptTokens     int    `json:"prompt_tokens"`
@@ -110,7 +110,7 @@ func ListCreditUsage(userId int, start, end int64, page, size int) (*CreditUsage
 	for _, row := range rows {
 		items = append(items, CreditUsageEntry{
 			Id:               row.Id,
-			CreatedAt:        row.CreatedAt,
+			CreatedTime:      row.CreatedAt,
 			ModelName:        row.ModelName,
 			TokenName:        row.TokenName,
 			Credits:          common.FormatQuotaAsCredits(int64(row.Quota)),

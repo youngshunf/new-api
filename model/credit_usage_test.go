@@ -3,9 +3,17 @@ package model
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCreditUsageEntryUsesGovernedCreatedTimeField(t *testing.T) {
+	payload, err := common.Marshal(CreditUsageEntry{CreatedTime: 1_800_000_000})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"id":0,"created_time":1800000000,"model_name":"","token_name":"","credits":"","prompt_tokens":0,"completion_tokens":0,"use_time":0,"is_stream":false}`, string(payload))
+}
 
 // doc94 D1：流水与日聚合成为 Cloud 的唯一消费读源。
 // 这里锁两件事：金额一律由 NewAPI 换算成积分（Cloud 不再持有换算常量）；
