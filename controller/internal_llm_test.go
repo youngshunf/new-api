@@ -89,7 +89,7 @@ func TestModelInventoryRevisionIgnoresUpstreamOrdering(t *testing.T) {
 	second := buildSampleInventory(t, shuffled, shuffledVendors, sampleEndpoints(),
 		map[string]float64{"vip": 0.8, "default": 1})
 
-	assert.Equal(t, first.SourceRevision, second.SourceRevision)
+	assert.Equal(t, first.SourceDigest, second.SourceDigest)
 	require.Len(t, first.Models, 2)
 	assert.Equal(t, []string{"dall-e-3", "gpt-4o"}, []string{first.Models[0].ModelName, first.Models[1].ModelName})
 	assert.Equal(t, []string{"default", "vip"}, first.Models[1].EnableGroups)
@@ -102,7 +102,7 @@ func TestModelInventoryRevisionExcludesMeasuredAt(t *testing.T) {
 	late, err := buildModelInventory(samplePricing(), sampleVendors(), sampleEndpoints(), nil, time.Unix(1800000000, 0))
 	require.NoError(t, err)
 
-	assert.Equal(t, early.SourceRevision, late.SourceRevision)
+	assert.Equal(t, early.SourceDigest, late.SourceDigest)
 	assert.NotEqual(t, early.MeasuredAt, late.MeasuredAt)
 	assert.Equal(t, "2023-11-14T22:13:20Z", early.MeasuredAt)
 }
@@ -198,7 +198,7 @@ func TestModelInventoryRevisionTracksEveryPublishedFact(t *testing.T) {
 			endpoints, groupRatio := sampleEndpoints(), map[string]float64{"default": 1}
 			testCase.mutate(pricing, vendors, endpoints, groupRatio)
 			mutated := buildSampleInventory(t, pricing, vendors, endpoints, groupRatio)
-			assert.NotEqual(t, baseline.SourceRevision, mutated.SourceRevision,
+			assert.NotEqual(t, baseline.SourceDigest, mutated.SourceDigest,
 				"改了 %s 却算出同一个 source_revision，说明这个事实没有进入快照", testCase.name)
 		})
 	}
@@ -607,7 +607,7 @@ func setupModelInventoryTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	model.DB, model.LOG_DB = db, db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.LlmInventoryState{}))
 	// pricingMap 是 model 包的进程级缓存，前后都要清，免得和同包别的用例互相看见对方的库存。
 	model.InvalidatePricingCache()
 
@@ -669,7 +669,8 @@ func TestGetModelInventoryReusesThePricingAggregation(t *testing.T) {
 	assert.Equal(t, "gpt-4o-test", entry.ModelName)
 	assert.Equal(t, []string{"default", "vip"}, entry.EnableGroups)
 	assert.Contains(t, entry.SupportedEndpointTypes, "openai")
-	assert.Len(t, inventory.SourceRevision, 64, "source_revision 是 sha256 的十六进制")
+	assert.Len(t, inventory.SourceDigest, 64, "source_digest 是 sha256 的十六进制")
+	assert.Positive(t, inventory.SourceRevision, "source_revision 必须为单调整数")
 	_, err := time.Parse(time.RFC3339, inventory.MeasuredAt)
 	assert.NoError(t, err)
 }

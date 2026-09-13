@@ -74,6 +74,13 @@ func GetInternalModelInventory(c *gin.Context) {
 			"inventory_digest_failed", "failed to compute the inventory source_revision", false)
 		return
 	}
+	inventory.SourceRevision, err = model.ObserveLlmInventory(model.DB, inventory.SourceDigest)
+	if err != nil {
+		logger.LogError(c, "库存版本持久化失败: "+err.Error())
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable,
+			"inventory_revision_unavailable", "inventory revision persistence failed", true)
+		return
+	}
 	c.JSON(http.StatusOK, inventory)
 }
 
@@ -150,7 +157,7 @@ func buildModelInventory(pricing []model.Pricing, vendors []model.PricingVendor,
 		return nil, err
 	}
 	return &dto.LlmModelInventory{
-		SourceRevision:            revision,
+		SourceDigest:              revision,
 		MeasuredAt:                measuredAt.UTC().Format(time.RFC3339),
 		LlmModelInventorySnapshot: snapshot,
 	}, nil

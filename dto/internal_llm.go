@@ -71,10 +71,10 @@ type LlmModelInventorySnapshot struct {
 
 // LlmModelInventory 是 GET /api/internal/v1/llm/model-inventory 的出参。
 type LlmModelInventory struct {
-	// SourceRevision 标识「这次库存快照是哪一版」：对 LlmModelInventorySnapshot 的规范化
-	// JSON 取 sha256，十六进制小写。内容一致就一定同值，内容变了就一定变值——
-	// Reconciler 用它判定是否需要 upsert，也写进 `llm.model_inventory.source_revision`。
-	SourceRevision string `json:"source_revision"`
+	// SourceRevision 是数据库持久化的单调库存版本，与平台和节点的整数契约一致。
+	SourceRevision int64 `json:"source_revision"`
+	// SourceDigest 只用于内容判同；不能截断成版本号。
+	SourceDigest string `json:"source_digest"`
 	// MeasuredAt 是本次快照的读取时刻（RFC3339），只用于新鲜度判定，不进摘要。
 	MeasuredAt string `json:"measured_at"`
 	LlmModelInventorySnapshot
