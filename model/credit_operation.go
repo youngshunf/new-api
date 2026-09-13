@@ -215,8 +215,9 @@ func normalizeCreditOperationRequest(req *dto.CreditOperationRequest) (*normaliz
 	if req.WalletOverflow != nil {
 		normalized.walletOverflow = *req.WalletOverflow
 	}
-	if len(normalized.reason) > 64 {
-		normalized.reason = normalized.reason[:64]
+	// varchar(64) 按字符计数；按字节截断会切坏中文或 emoji 的 UTF-8 编码。
+	if reason := []rune(normalized.reason); len(reason) > 64 {
+		normalized.reason = string(reason[:64])
 	}
 	if len(normalized.externalSubscriptionId) > 128 {
 		return nil, creditError(http.StatusBadRequest, CreditErrorInvalidRequest, false, "external_subscription_id exceeds 128 chars")
