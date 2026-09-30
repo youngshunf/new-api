@@ -376,6 +376,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	// 普通音频没有幂等发布合同；可信 middleware 模式优先于渠道错误和重试预算，禁止二次提交。
+	switch c.GetInt("relay_mode") {
+	case relayconstant.RelayModeAudioSpeech, relayconstant.RelayModeAudioTranscription, relayconstant.RelayModeAudioTranslation:
+		return false
+	}
 	if openaiErr == nil {
 		return false
 	}

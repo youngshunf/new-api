@@ -14,9 +14,18 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	servicetests "github.com/QuantumNous/new-api/tests/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldCopyUpstreamHeaderOwnership(t *testing.T) {
+	servicetests.VerifyUpstreamHeaderOwnership(t, ShouldCopyUpstreamHeader)
+}
+
+func TestIOCopyBytesKeepsGatewayFacts(t *testing.T) {
+	servicetests.VerifyCopiedResponseKeepsGatewayFacts(t, IOCopyBytesGracefully)
+}
 
 func withRelayHTTPTransportSettings(t *testing.T) {
 	t.Helper()
