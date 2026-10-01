@@ -45,6 +45,8 @@ var relayLeaseRequestAllowedFields = map[string]struct{}{
 	"credential_generation": {},
 	"model_limits":          {},
 	"expires_time":          {},
+	"purpose":               {},
+	"accounting_mode":       {},
 }
 
 // GetInternalModelInventory 返回完整模型库存与源 revision。
@@ -210,6 +212,8 @@ func PutInternalRelayLease(c *gin.Context) {
 		CredentialGeneration: outcome.Generation,
 		ModelLimits:          outcome.Token.GetModelLimits(),
 		ExpiresTime:          time.Unix(outcome.Token.ExpiredTime, 0).UTC().Format(time.RFC3339),
+		Purpose:              outcome.Token.Purpose,
+		AccountingMode:       outcome.Token.AccountingMode,
 		TokenPrefix:          model.RelayTokenPrefix(outcome.Token),
 		RelayToken:           model.RelayTokenPlaintext(outcome.Token),
 		Created:              outcome.Created,
@@ -245,6 +249,10 @@ func DeleteInternalRelayLease(c *gin.Context) {
 }
 
 // decodeRelayLeaseRequest 解析并校验 lease 入参，产出已归一的 RelayLeaseSpec。
+func validateRelayLeaseAccountingRequest(purpose, accountingMode string) error {
+	return model.ValidateRelayLeaseAccounting(strings.TrimSpace(purpose), strings.TrimSpace(accountingMode))
+}
+
 func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.RelayLeaseSpec, *model.RelayLeaseError) {
 	invalid := func(format string, args ...any) *model.RelayLeaseError {
 		return &model.RelayLeaseError{
@@ -298,6 +306,11 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if !expiresTime.After(time.Now()) {
 		return nil, invalid("expires_time must be in the future")
 	}
+	if request.Purpose != "" || request.AccountingMode != "" {
+		if err := validateRelayLeaseAccountingRequest(request.Purpose, request.AccountingMode); err != nil {
+			return nil, invalid("%s", err.Error())
+		}
+	}
 
 	return &model.RelayLeaseSpec{
 		ExternalLeaseId:      externalLeaseId,
@@ -305,6 +318,8 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		CredentialGeneration: request.CredentialGeneration,
 		ModelLimits:          modelLimits,
 		ExpiredTime:          expiresTime.Unix(),
+		Purpose:              strings.TrimSpace(request.Purpose),
+		AccountingMode:       strings.TrimSpace(request.AccountingMode),
 	}, nil
 }
 

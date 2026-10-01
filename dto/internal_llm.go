@@ -96,7 +96,9 @@ type LlmRelayLeaseRequest struct {
 	// NewAPI 侧落库时按逗号拼进 tokens.model_limits（同一个列表的物理表示，不是改名）。
 	ModelLimits []string `json:"model_limits"`
 	// ExpiresTime 是 lease 到期时刻（RFC3339），必填且必须在将来。
-	ExpiresTime string `json:"expires_time"`
+	ExpiresTime    string `json:"expires_time"`
+	Purpose        string `json:"purpose,omitempty"`
+	AccountingMode string `json:"accounting_mode,omitempty"`
 }
 
 // LlmRelayLeaseView 是签发/更新的回执。
@@ -107,6 +109,8 @@ type LlmRelayLeaseView struct {
 	CredentialGeneration int64    `json:"credential_generation"`
 	ModelLimits          []string `json:"model_limits"`
 	ExpiresTime          string   `json:"expires_time"`
+	Purpose              string   `json:"purpose,omitempty"`
+	AccountingMode       string   `json:"accounting_mode,omitempty"`
 	// TokenPrefix 是明文 Token 的前缀，供平台存进 `llm.credential_lease.token_prefix` 做人可读定位。
 	TokenPrefix string `json:"token_prefix"`
 	// RelayToken 是**明文 Relay Token**，可直接作为 Bearer 使用。
