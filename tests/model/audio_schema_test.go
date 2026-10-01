@@ -12,6 +12,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -201,4 +202,93 @@ func TestFormalMigrationRejectsWrongPartialSchema(t *testing.T) {
 			assert.Error(t, migrations.Verify(db))
 		})
 	}
+}
+
+func TestFormalMigrationRejectsUnsupportedDialect(t *testing.T) {
+	base, err := gorm.Open(sqlite.Open(t.TempDir()+"/unsupported.db"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := base.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+
+	db, err := gorm.Open(clickhouse.New(clickhouse.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{})
+	require.NoError(t, err)
+
+	err = migrations.Apply(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "不支持迁移方言")
+}
+
+func TestFormalMigrationRejectsIncompleteLedger(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/incomplete-ledger.db"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&token884fBaseline{}))
+	require.NoError(t, db.Exec(`CREATE TABLE schema_migrations (
+		migration_id TEXT PRIMARY KEY NOT NULL,
+		checksum TEXT NOT NULL,
+		created_time INTEGER NOT NULL
+	)`).Error)
+
+	err = migrations.Verify(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "未完成")
+}
+
+func TestFormalMigrationRejectsUniqueIndexWithWrongColumns(t *testing.T) {
+	tests := []struct {
+		name       string
+		indexName  string
+		table      string
+		wrongIndex string
+		want       string
+	}{
+		{
+			name:       "token external lease index",
+			indexName:  "idx_tokens_external_lease_id",
+			table:      "tokens",
+			wrongIndex: "purpose",
+			want:       "唯一索引列错误",
+		},
+		{
+			name:       "settlement lookup index",
+			indexName:  "idx_audio_settlement_lookup",
+			table:      "audio_request_settlements",
+			wrongIndex: "external_lease_id,model_name",
+			want:       "唯一索引列错误",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(t.TempDir()+"/wrong-index.db"), &gorm.Config{})
+			require.NoError(t, err)
+			require.NoError(t, db.AutoMigrate(&token884fBaseline{}))
+			require.NoError(t, migrations.Apply(db))
+			require.NoError(t, db.Exec("DROP INDEX "+tc.indexName).Error)
+			require.NoError(t, db.Exec("CREATE UNIQUE INDEX "+tc.indexName+" ON "+tc.table+"("+tc.wrongIndex+")").Error)
+
+			err = migrations.Verify(db)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestFormalMigrationDoesNotRecordLedgerAfterSchemaFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/failed-ledger.db"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&token884fBaseline{}))
+	require.NoError(t, db.Exec("ALTER TABLE tokens ADD COLUMN purpose INTEGER NOT NULL DEFAULT 0").Error)
+
+	err = migrations.Apply(db)
+	require.Error(t, err)
+
+	var count int64
+	if db.Migrator().HasTable("schema_migrations") {
+		require.NoError(t, db.Table("schema_migrations").Count(&count).Error)
+	}
+	assert.Zero(t, count, "schema形状失败时不得登记已完成迁移")
 }
