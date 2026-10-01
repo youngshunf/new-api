@@ -249,10 +249,6 @@ func DeleteInternalRelayLease(c *gin.Context) {
 }
 
 // decodeRelayLeaseRequest 解析并校验 lease 入参，产出已归一的 RelayLeaseSpec。
-func validateRelayLeaseAccountingRequest(purpose, accountingMode string) error {
-	return model.ValidateRelayLeaseAccounting(strings.TrimSpace(purpose), strings.TrimSpace(accountingMode))
-}
-
 func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.RelayLeaseSpec, *model.RelayLeaseError) {
 	invalid := func(format string, args ...any) *model.RelayLeaseError {
 		return &model.RelayLeaseError{
@@ -306,10 +302,10 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if !expiresTime.After(time.Now()) {
 		return nil, invalid("expires_time must be in the future")
 	}
-	if request.Purpose != "" || request.AccountingMode != "" {
-		if err := validateRelayLeaseAccountingRequest(request.Purpose, request.AccountingMode); err != nil {
-			return nil, invalid("%s", err.Error())
-		}
+	purpose, accountingMode, accountingErr := model.NormalizeRelayLeaseAccounting(
+		strings.TrimSpace(request.Purpose), strings.TrimSpace(request.AccountingMode))
+	if accountingErr != nil {
+		return nil, invalid("%s", accountingErr.Error())
 	}
 
 	return &model.RelayLeaseSpec{
@@ -318,8 +314,8 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		CredentialGeneration: request.CredentialGeneration,
 		ModelLimits:          modelLimits,
 		ExpiredTime:          expiresTime.Unix(),
-		Purpose:              strings.TrimSpace(request.Purpose),
-		AccountingMode:       strings.TrimSpace(request.AccountingMode),
+		Purpose:              purpose,
+		AccountingMode:       accountingMode,
 	}, nil
 }
 

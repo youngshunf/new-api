@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -257,6 +258,8 @@ func setupRelayLeaseTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	model.DB, model.LOG_DB = db, db
 	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.User{}))
+	// purpose/accounting_mode 等受管音频列只由正式迁移建立，AutoMigrate 不建；与 model 测试同样跑真实迁移。
+	require.NoError(t, migrations.Apply(db))
 	// aff_code 上有唯一索引，两个账户必须给不同的值，否则第二条种子数据插不进去。
 	require.NoError(t, db.Create(&model.User{
 		Id: leaseTestAccountId, Username: "workspace-a", AffCode: "aff-a", Status: common.UserStatusEnabled,

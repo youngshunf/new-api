@@ -63,18 +63,23 @@ var externalLeaseIdPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 
 func stringPointer(value string) *string { return &value }
 
-func ValidateRelayLeaseAccounting(purpose, accountingMode string) error {
-	if purpose == "" && accountingMode == "" {
-		return nil
+// NormalizeRelayLeaseAccounting 校验并归一租约的用途与记账模式。
+//
+// 私有契约 llm-relay-lease-internal-v1 要求 generic 租约显式携带 purpose=generic、
+// accounting_mode=legacy；两者都省略与该显式组合等价，统一归一为 generic/legacy 落库，
+// 不把空串写进带默认值的列。受管音频租约只接受三种音频用途且必须是 synchronous。
+func NormalizeRelayLeaseAccounting(purpose, accountingMode string) (string, string, error) {
+	if (purpose == "" && accountingMode == "") || (purpose == "generic" && accountingMode == "legacy") {
+		return "generic", "legacy", nil
 	}
 	if accountingMode != "synchronous" {
-		return errors.New("managed audio lease requires synchronous accounting_mode")
+		return "", "", errors.New("managed audio lease requires synchronous accounting_mode")
 	}
 	switch purpose {
 	case "audio.transcribe", "audio.translate", "audio.tts":
-		return nil
+		return purpose, accountingMode, nil
 	default:
-		return errors.New("managed audio lease purpose is invalid")
+		return "", "", errors.New("managed audio lease purpose is invalid")
 	}
 }
 
@@ -231,9 +236,11 @@ func RelayTokenPrefix(token *Token) string {
 //   - 在册且代号更小    → 409，这是一条过期请求，绝不把已经轮换过的凭据倒回去；
 //   - 在册但属于别的账户 → 409，lease 换账户等于换扣费主体。
 func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError) {
-	if err := ValidateRelayLeaseAccounting(spec.Purpose, spec.AccountingMode); err != nil {
-		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", err)
+	purpose, accountingMode, accountingErr := NormalizeRelayLeaseAccounting(spec.Purpose, spec.AccountingMode)
+	if accountingErr != nil {
+		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", accountingErr)
 	}
+	spec.Purpose, spec.AccountingMode = purpose, accountingMode
 	relayLeaseUpsertLock.Lock()
 	defer relayLeaseUpsertLock.Unlock()
 
