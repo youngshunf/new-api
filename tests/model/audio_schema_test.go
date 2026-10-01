@@ -253,7 +253,14 @@ func TestFormalMigrationRejectsUniqueIndexWithWrongColumns(t *testing.T) {
 			want:       "唯一索引列错误",
 		},
 		{
-			name:       "settlement lookup index",
+			name:       "settlement lookup index fewer columns",
+			indexName:  "idx_audio_settlement_lookup",
+			table:      "audio_request_settlements",
+			wrongIndex: "external_lease_id",
+			want:       "唯一索引列集合错误",
+		},
+		{
+			name:       "settlement lookup index extra wrong column",
 			indexName:  "idx_audio_settlement_lookup",
 			table:      "audio_request_settlements",
 			wrongIndex: "external_lease_id,model_name",
