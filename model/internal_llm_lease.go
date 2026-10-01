@@ -61,6 +61,23 @@ const (
 // 首字符另外要求是字母或数字，避免 ".." 这类看起来像路径的标识符。
 var externalLeaseIdPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 
+func stringPointer(value string) *string { return &value }
+
+func ValidateRelayLeaseAccounting(purpose, accountingMode string) error {
+	if purpose == "" && accountingMode == "" {
+		return nil
+	}
+	if accountingMode != "synchronous" {
+		return errors.New("managed audio lease requires synchronous accounting_mode")
+	}
+	switch purpose {
+	case "audio.transcribe", "audio.translate", "audio.tts":
+		return nil
+	default:
+		return errors.New("managed audio lease purpose is invalid")
+	}
+}
+
 // relayLeaseUpsertLock 把同进程内的 lease 签发串行化。
 //
 // 幂等键没有数据库唯一约束（那需要加列/加索引，见文件头注），所以「查不到就插入」在并发下
@@ -178,6 +195,9 @@ type RelayLeaseSpec struct {
 	ModelLimits          []string
 	// ExpiredTime 是 Unix 秒。lease 一律有期限，这里不接受 -1（永不过期）。
 	ExpiredTime int64
+	// Purpose 与 AccountingMode 是可信租约控制面的受管音频资格；generic/legacy 保持旧租约。
+	Purpose        string
+	AccountingMode string
 }
 
 // RelayLeaseOutcome 是一次幂等签发的结果。
@@ -211,6 +231,9 @@ func RelayTokenPrefix(token *Token) string {
 //   - 在册且代号更小    → 409，这是一条过期请求，绝不把已经轮换过的凭据倒回去；
 //   - 在册但属于别的账户 → 409，lease 换账户等于换扣费主体。
 func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError) {
+	if err := ValidateRelayLeaseAccounting(spec.Purpose, spec.AccountingMode); err != nil {
+		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", err)
+	}
 	relayLeaseUpsertLock.Lock()
 	defer relayLeaseUpsertLock.Unlock()
 
@@ -251,11 +274,25 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			UnlimitedQuota:     true,
 			ModelLimitsEnabled: true,
 			ModelLimits:        modelLimits,
+			Purpose:            spec.Purpose,
+			AccountingMode:     spec.AccountingMode,
+			ExternalLeaseId:    stringPointer(spec.ExternalLeaseId),
 		}
-		if insertErr := lease.Insert(); insertErr != nil {
+		if insertErr := DB.Table("tokens").Create(map[string]any{
+			"user_id": lease.UserId, "name": lease.Name, "key": lease.Key, "status": lease.Status,
+			"created_time": lease.CreatedTime, "accessed_time": lease.AccessedTime, "expired_time": lease.ExpiredTime,
+			"unlimited_quota": lease.UnlimitedQuota, "model_limits_enabled": lease.ModelLimitsEnabled,
+			"model_limits": lease.ModelLimits, "purpose": lease.Purpose, "accounting_mode": lease.AccountingMode,
+			"external_lease_id": spec.ExternalLeaseId,
+		}).Error; insertErr != nil {
 			return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 				"failed to persist the lease")
 		}
+		var stored Token
+		if reloadErr := DB.Where("external_lease_id = ?", spec.ExternalLeaseId).First(&stored).Error; reloadErr != nil {
+			return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true, "failed to reload the persisted lease")
+		}
+		lease = &stored
 		return &RelayLeaseOutcome{Token: lease, Generation: spec.CredentialGeneration, Created: true}, nil
 	}
 
@@ -278,6 +315,9 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	updated.UnlimitedQuota = true
 	updated.ModelLimitsEnabled = true
 	updated.ModelLimits = modelLimits
+	updated.Purpose = spec.Purpose
+	updated.AccountingMode = spec.AccountingMode
+	updated.ExternalLeaseId = stringPointer(spec.ExternalLeaseId)
 	if rotated {
 		key, keyErr := common.GenerateKey()
 		if keyErr != nil {
@@ -293,9 +333,12 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	if cacheErr := invalidateTokenCacheForMutation(existing.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate relay lease token cache: " + cacheErr.Error())
 	}
-	if updateErr := DB.Model(&Token{Id: existing.Id}).
-		Select("name", "key", "status", "expired_time", "unlimited_quota", "model_limits_enabled", "model_limits").
-		Updates(&updated).Error; updateErr != nil {
+	if updateErr := DB.Model(&Token{Id: existing.Id}).Updates(map[string]any{
+		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime,
+		"unlimited_quota": updated.UnlimitedQuota, "model_limits_enabled": updated.ModelLimitsEnabled,
+		"model_limits": updated.ModelLimits, "purpose": updated.Purpose, "accounting_mode": updated.AccountingMode,
+		"external_lease_id": spec.ExternalLeaseId,
+	}).Error; updateErr != nil {
 		return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 			"failed to update the lease")
 	}
