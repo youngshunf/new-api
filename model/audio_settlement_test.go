@@ -8,6 +8,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 const audioSettlementQuota = int64(500000)
@@ -106,6 +107,46 @@ func TestAudioSettlementRefundRestoresTokenAndBothPools(t *testing.T) {
 	repeat, err := RefundAudioSettlement("lease-18002", "req-18002")
 	require.NoError(t, err)
 	assert.Equal(t, refunded.Revision, repeat.Revision, "重复退款不得二次返还")
+}
+
+func TestAudioSettlementLookupAndDispatchEvidenceIsMonotonic(t *testing.T) {
+	truncateTables(t)
+	clearAudioSettlementTables(t)
+	seedCreditUser(t, 18004, int(3*audioSettlementQuota))
+	seedActiveContract(t, 18004, "audio-contract-18004", 10*audioSettlementQuota, 8*audioSettlementQuota)
+	token := seedManagedAudioToken(t, 180041, 18004, int(5*audioSettlementQuota), "lease-18004")
+	input := audioSettlementInput(18004, token.Id, "lease-18004", "req-18004", audioSettlementQuota)
+
+	created, err := CreateAudioSettlement(input)
+	require.NoError(t, err)
+	assert.Equal(t, AudioSettlementDispatchUnknown, created.DispatchState)
+
+	loaded, err := GetAudioSettlement("lease-18004", "req-18004")
+	require.NoError(t, err)
+	assert.Equal(t, created.AudioRequestSettlementId, loaded.AudioRequestSettlementId)
+	assert.Equal(t, AudioBillingStatusPending, loaded.BillingStatus)
+	assert.Equal(t, AudioSettlementDispatchUnknown, loaded.DispatchState)
+	assert.Nil(t, loaded.CompletedTime)
+
+	notDispatched, err := MarkAudioSettlementNotDispatched("lease-18004", "req-18004")
+	require.NoError(t, err)
+	assert.Equal(t, AudioSettlementDispatchNotDispatched, notDispatched.DispatchState)
+	assert.Equal(t, created.Revision+1, notDispatched.Revision)
+
+	repeated, err := MarkAudioSettlementNotDispatched("lease-18004", "req-18004")
+	require.NoError(t, err)
+	assert.Equal(t, notDispatched.Revision, repeated.Revision, "同一派发证据重复写不得推进revision")
+
+	dispatched, err := MarkAudioSettlementDispatched("lease-18004", "req-18004")
+	require.NoError(t, err)
+	assert.Equal(t, AudioSettlementDispatchDispatched, dispatched.DispatchState)
+	assert.Equal(t, notDispatched.Revision+1, dispatched.Revision)
+
+	_, err = MarkAudioSettlementNotDispatched("lease-18004", "req-18004")
+	assert.ErrorIs(t, err, ErrAudioSettlementInvalidDispatch, "已确认派发不得降级成未派发")
+
+	_, err = GetAudioSettlement("lease-18004", "missing-request")
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound, "查无receipt必须显式返回未知，而不是伪造未派发")
 }
 
 func TestAudioSettlementCreatesZeroReceiptAndRollsBackBeforeFundingMutation(t *testing.T) {

@@ -31,6 +31,7 @@ const (
 var (
 	ErrAudioSettlementConflict          = errors.New("audio settlement terminal target conflict")
 	ErrAudioSettlementInsufficientToken = errors.New("audio settlement token quota insufficient")
+	ErrAudioSettlementInvalidDispatch   = errors.New("audio settlement dispatch state is invalid")
 )
 
 // AudioSettlementInput 是NewAPI内部预扣接缝；不暴露Core/Node wire。
@@ -198,6 +199,68 @@ func preConsumeAudioFundsTx(tx *gorm.DB, input AudioSettlementInput, now int64) 
 }
 
 // SettleAudioSettlement 以absolute target结算；重复相同终局只返回原ACK。
+// GetAudioSettlement 按租约与网关请求号读取真实receipt；查无记录由调用方映射为unknown。
+func GetAudioSettlement(leaseID, requestID string) (*AudioRequestSettlement, error) {
+	if strings.TrimSpace(leaseID) == "" || strings.TrimSpace(requestID) == "" {
+		return nil, errors.New("audio settlement lookup identity is empty")
+	}
+	var receipt AudioRequestSettlement
+	if err := DB.Where("external_lease_id = ? AND gateway_request_id = ?", leaseID, requestID).First(&receipt).Error; err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+// MarkAudioSettlementNotDispatched 记录发送前已确认的零效果事实。
+// 只有真实发送前失败才能写入；未知不能被调用方降级成未派发。
+func MarkAudioSettlementNotDispatched(leaseID, requestID string) (*AudioRequestSettlement, error) {
+	return markAudioSettlementDispatch(leaseID, requestID, AudioSettlementDispatchNotDispatched)
+}
+
+// MarkAudioSettlementDispatched 记录已收到真实上游响应或其它确定派发证据。
+func MarkAudioSettlementDispatched(leaseID, requestID string) (*AudioRequestSettlement, error) {
+	return markAudioSettlementDispatch(leaseID, requestID, AudioSettlementDispatchDispatched)
+}
+
+func markAudioSettlementDispatch(leaseID, requestID, nextState string) (*AudioRequestSettlement, error) {
+	if strings.TrimSpace(leaseID) == "" || strings.TrimSpace(requestID) == "" {
+		return nil, errors.New("audio settlement dispatch identity is empty")
+	}
+	if nextState != AudioSettlementDispatchNotDispatched && nextState != AudioSettlementDispatchDispatched {
+		return nil, ErrAudioSettlementInvalidDispatch
+	}
+	var result AudioRequestSettlement
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var receipt AudioRequestSettlement
+		if err := lockForUpdate(tx).Where("external_lease_id = ? AND gateway_request_id = ?", leaseID, requestID).First(&receipt).Error; err != nil {
+			return err
+		}
+		if receipt.DispatchState == nextState {
+			result = receipt
+			return nil
+		}
+		if receipt.DispatchState == AudioSettlementDispatchDispatched && nextState == AudioSettlementDispatchNotDispatched {
+			return ErrAudioSettlementInvalidDispatch
+		}
+		if receipt.DispatchState != AudioSettlementDispatchUnknown && receipt.DispatchState != AudioSettlementDispatchNotDispatched {
+			return ErrAudioSettlementInvalidDispatch
+		}
+		now := DatabaseTime{Time: time.Now().UTC()}
+		receipt.DispatchState = nextState
+		receipt.UpdatedTime = now
+		receipt.Revision++
+		if err := tx.Save(&receipt).Error; err != nil {
+			return fmt.Errorf("save audio settlement dispatch state: %w", err)
+		}
+		result = receipt
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func SettleAudioSettlement(leaseID, requestID string, target int64) (*AudioRequestSettlement, error) {
 	return terminalizeAudioSettlement(leaseID, requestID, AudioSettlementActionSettle, target)
 }
