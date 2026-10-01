@@ -16,12 +16,33 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	channeltests "github.com/QuantumNous/new-api/tests/channel"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 )
+
+func TestAudioTransportSingleSend(t *testing.T) {
+	channeltests.VerifyAudioTransportSingleSend(t, doRequest, ResolveHeaderOverride)
+}
+
+func TestAudioTransportPreWriteConnectionReselection(t *testing.T) {
+	channeltests.VerifyAudioPreWriteConnectionReselection(t, doRequest, ResolveHeaderOverride)
+}
+
+func TestAudioTransportRedirectNotFollowed(t *testing.T) {
+	channeltests.VerifyAudioRedirectNotFollowed(t, doRequest, ResolveHeaderOverride)
+}
+
+func TestAudioTransportEmptyBodyRejected(t *testing.T) {
+	channeltests.VerifyAudioEmptyBodyRejected(t, doRequest)
+}
+
+func TestNonAudioTransportRetryUnchanged(t *testing.T) {
+	channeltests.VerifyNonAudioTransportRetryUnchanged(t, doRequest, ResolveHeaderOverride)
+}
 
 func TestApplyUpstreamBodyMetadataSetsReplayableMetadata(t *testing.T) {
 	t.Parallel()

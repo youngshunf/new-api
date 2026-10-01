@@ -501,14 +501,25 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 }
 
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
+	// 普通音频没有幂等发布合同；在所有HeaderOverride之后禁止标准HTTP transport重开请求体。
+	switch info.RelayMode {
+	case constant.RelayModeAudioSpeech, constant.RelayModeAudioTranscription, constant.RelayModeAudioTranslation:
+		if req == nil || req.Body == nil || req.Body == http.NoBody {
+			return nil, types.NewError(errors.New("audio request body is empty"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+		}
+		req.GetBody = nil
+		for name := range req.Header {
+			if strings.EqualFold(name, "Idempotency-Key") || strings.EqualFold(name, "X-Idempotency-Key") {
+				delete(req.Header, name)
+			}
+		}
+	}
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
-	// Clients are cached and shared across channels, so override redirect
-	// behavior on a shallow copy instead of mutating the cached client. This
-	// still reuses its transport and connection pools, including HTTP/2's
-	// transparent stream retries.
+	// 客户端在渠道间共享；浅复制只覆盖重定向策略，不修改缓存客户端或连接池。
+	// 非音频保留原transport策略，普通音频已在上面关闭请求体重放。
 	relayClient := *client
 	relayClient.CheckRedirect = keepUpstreamRedirectResponse
 	if common2.DebugEnabled && req != nil && req.URL != nil {
