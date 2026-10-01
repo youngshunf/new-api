@@ -39,6 +39,32 @@ func audioSettlementInput(userID, tokenID int, leaseID, requestID string, amount
 	}
 }
 
+func TestAudioSettlementRejectsLegacyRelayLeaseWithoutWritingReceipt(t *testing.T) {
+	truncateTables(t)
+	clearAudioSettlementTables(t)
+	seedCreditUser(t, 18005, int(3*audioSettlementQuota))
+	legacyToken := &Token{
+		Id: 180051, UserId: 18005, Key: "sk-legacy-relay-lease", Status: common.TokenStatusEnabled,
+		RemainQuota: int(5 * audioSettlementQuota),
+	}
+	require.NoError(t, DB.Table("tokens").Create(map[string]any{
+		"id": legacyToken.Id, "user_id": legacyToken.UserId, "key": legacyToken.Key,
+		"status": common.TokenStatusEnabled, "remain_quota": legacyToken.RemainQuota,
+	}).Error)
+
+	_, err := CreateAudioSettlement(AudioSettlementInput{
+		ExternalLeaseId: "lease-18005", GatewayRequestId: "req-18005",
+		TokenId: legacyToken.Id, UserId: legacyToken.UserId, CredentialGeneration: 3,
+		RelayMode: relayconstant.RelayModeAudioSpeech, ModelName: "tts-1",
+		PreConsumedQuota: audioSettlementQuota, FundingPreference: "wallet_only",
+	})
+	require.ErrorIs(t, err, ErrAudioSettlementRequiresManagedToken,
+		"当前真实 relay lease 仍是 legacy token，不能伪造音频受管账务接缝")
+	var count int64
+	require.NoError(t, DB.Model(&AudioRequestSettlement{}).Where("gateway_request_id = ?", "req-18005").Count(&count).Error)
+	assert.Zero(t, count, "缺少受管音频令牌时不得写入假receipt")
+}
+
 func TestAudioSettlementPreConsumeAndAbsoluteSettleAreIdempotent(t *testing.T) {
 	truncateTables(t)
 	clearAudioSettlementTables(t)

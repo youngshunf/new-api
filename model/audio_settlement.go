@@ -29,9 +29,10 @@ const (
 )
 
 var (
-	ErrAudioSettlementConflict          = errors.New("audio settlement terminal target conflict")
-	ErrAudioSettlementInsufficientToken = errors.New("audio settlement token quota insufficient")
-	ErrAudioSettlementInvalidDispatch   = errors.New("audio settlement dispatch state is invalid")
+	ErrAudioSettlementConflict             = errors.New("audio settlement terminal target conflict")
+	ErrAudioSettlementInsufficientToken    = errors.New("audio settlement token quota insufficient")
+	ErrAudioSettlementInvalidDispatch      = errors.New("audio settlement dispatch state is invalid")
+	ErrAudioSettlementRequiresManagedToken = errors.New("audio settlement requires a managed synchronous token")
 )
 
 // AudioSettlementInput 是NewAPI内部预扣接缝；不暴露Core/Node wire。
@@ -90,7 +91,7 @@ func CreateAudioSettlement(input AudioSettlementInput) (*AudioRequestSettlement,
 		}
 		accountingErr := CheckTokenAccountingMode(&token)
 		if accountingErr == nil {
-			return errors.New("audio settlement requires a managed synchronous token")
+			return ErrAudioSettlementRequiresManagedToken
 		}
 		if !errors.Is(accountingErr, ErrAudioAccountingUnavailable) {
 			return accountingErr
