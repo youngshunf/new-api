@@ -127,3 +127,15 @@ type LlmRelayLeaseRevocation struct {
 	Revoked         bool   `json:"revoked"`
 	NewApiTokenId   *int   `json:"newapi_token_id"`
 }
+
+// AudioRequestSettlementResult 是音频账务回执查询的闭集出参。
+// 只返回终局判定所需字段，不泄露账户、Token、金额、模型或供应商信息。
+type AudioRequestSettlementResult struct {
+	ExternalLeaseId          string  `json:"external_lease_id"`
+	GatewayRequestId         string  `json:"gateway_request_id"`
+	AudioRequestSettlementId *string `json:"audio_request_settlement_id"`
+	BillingStatus            string  `json:"billing_status"`
+	DispatchState            string  `json:"dispatch_state"`
+	Revision                 *int64  `json:"revision"`
+	CompletedTime            *string `json:"completed_time"`
+}

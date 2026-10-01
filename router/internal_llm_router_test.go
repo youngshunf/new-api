@@ -62,6 +62,7 @@ func TestInternalRouterKeepsLlmAndCreditInSeparateScopedGroups(t *testing.T) {
 		"GET /api/internal/v1/llm/model-inventory",
 		"PUT /api/internal/v1/llm/relay-leases/:external_lease_id",
 		"DELETE /api/internal/v1/llm/relay-leases/:external_lease_id",
+		"GET /api/internal/v1/llm/relay-leases/:external_lease_id/audio-request-settlements/:gateway_request_id",
 		"GET /api/internal/v1/credit-accounts/:newapi_user_id",
 	} {
 		assert.True(t, registered[expected], "路由 %s 没有注册", expected)
