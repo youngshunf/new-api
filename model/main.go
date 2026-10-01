@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/migrations"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/clickhouse"
@@ -213,14 +214,16 @@ func InitDB() (err error) {
 		sqlDB.SetConnMaxLifetime(time.Second * time.Duration(common.GetEnvOrDefault("SQL_MAX_LIFETIME", 60)))
 
 		if !common.IsMasterNode {
-			return nil
+			return migrations.Verify(DB)
 		}
 		if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
 			//_, _ = sqlDB.Exec("ALTER TABLE channels MODIFY model_mapping TEXT;") // TODO: delete this line when most users have upgraded
 		}
 		common.SysLog("database migration started")
-		err = migrateDB()
-		return err
+		if err = migrateDB(); err != nil {
+			return err
+		}
+		return migrations.Apply(DB)
 	} else {
 		common.FatalLog(err)
 	}
@@ -324,13 +327,20 @@ func migrateDB() error {
 	// Migrate price_amount column from float/double to decimal for existing tables
 	migrateSubscriptionPlanPriceAmount()
 	// Migrate model_limits column from varchar to text for existing tables
-	if err := migrateTokenModelLimitsToText(); err != nil {
-		return err
+	if !DB.Migrator().HasTable("schema_migrations") {
+		if err := migrateTokenModelLimitsToText(); err != nil {
+			return err
+		}
 	}
 
+	// Token进入正式迁移后不再交AutoMigrate重建；SQLite重建会丢正式SQL拥有的唯一索引。
+	if !DB.Migrator().HasTable("schema_migrations") {
+		if err := DB.AutoMigrate(&Token{}); err != nil {
+			return err
+		}
+	}
 	err := DB.AutoMigrate(
 		&Channel{},
-		&Token{},
 		&User{},
 		&UserSession{},
 		&AuthFlow{},

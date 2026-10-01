@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
@@ -85,6 +86,11 @@ func initModelListColumnNames(t *testing.T) {
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	require.NoError(t, os.Setenv("SQL_DSN", "local"))
 
+	// 非master现在只验证正式schema；为列名初始化的隔离库先建立真实迁移底座。
+	baseline, err := gorm.Open(sqlite.Open(common.SQLitePath), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, baseline.AutoMigrate(&model.Token{}))
+	require.NoError(t, migrations.Apply(baseline))
 	require.NoError(t, model.InitDB())
 	if model.DB != nil {
 		sqlDB, err := model.DB.DB()

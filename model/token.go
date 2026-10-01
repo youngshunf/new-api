@@ -30,6 +30,10 @@ type Token struct {
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
 	AutoGroups         string         `json:"-" gorm:"type:text"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
+	// 正式SQL迁移拥有这三列；上游AutoMigrate不得提前代建。
+	Purpose         string  `json:"purpose" gorm:"column:purpose;->;-:migration"`
+	AccountingMode  string  `json:"accounting_mode" gorm:"column:accounting_mode;->;-:migration"`
+	ExternalLeaseId *string `json:"external_lease_id" gorm:"column:external_lease_id;->;-:migration"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -310,6 +314,9 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
+		if modeErr := CheckTokenAccountingMode(token); modeErr != nil {
+			return token, modeErr
+		}
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||
 			token.Status != common.TokenStatusEnabled {
@@ -369,7 +376,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		// Try Redis first
 		token, err := cacheGetTokenByKey(key)
 		if err == nil {
-			return token, nil
+			return cachedManagedToken(token, key)
 		}
 		// Don't return error - fall through to DB
 	}
@@ -388,6 +395,11 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 }
 
 func (token *Token) Insert() error {
+	if token.Purpose != "" && token.Purpose != "generic" || token.AccountingMode != "" && token.AccountingMode != "legacy" || token.ExternalLeaseId != nil {
+		return errors.New("受管音频令牌只能由可信租约签发入口创建")
+	}
+	token.Purpose = "generic"
+	token.AccountingMode = "legacy"
 	var err error
 	err = DB.Create(token).Error
 	return err
@@ -395,6 +407,9 @@ func (token *Token) Insert() error {
 
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
+	if err := checkManagedTokenMutation(token); err != nil {
+		return err
+	}
 	// 写库前失效缓存并设置 fence，防止并发读者把过期快照重新写回缓存。
 	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before update: " + cacheErr.Error())
@@ -404,6 +419,9 @@ func (token *Token) Update() (err error) {
 }
 
 func (token *Token) SelectUpdate() (err error) {
+	if err := checkManagedTokenMutation(token); err != nil {
+		return err
+	}
 	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before status update: " + cacheErr.Error())
 	}
@@ -462,6 +480,9 @@ func DeleteTokenById(id int, userId int) (err error) {
 }
 
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
+	if err := checkQuotaTokenAccounting(tokenId); err != nil {
+		return err
+	}
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -493,6 +514,9 @@ func increaseTokenQuota(id int, quota int) (err error) {
 }
 
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
+	if err := checkQuotaTokenAccounting(id); err != nil {
+		return err
+	}
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}

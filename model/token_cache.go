@@ -74,10 +74,15 @@ redis.call('HSET', KEYS[1],
   'CreatedTime', ARGV[5], 'AccessedTime', ARGV[6], 'ExpiredTime', ARGV[7],
   'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
-  'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16])
+  'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16],
+  'Purpose', ARGV[18], 'AccountingMode', ARGV[19], 'ExternalLeaseId', ARGV[20])
 redis.call('EXPIRE', KEYS[1], ARGV[17])
 return 1`
 
+	externalLeaseId := ""
+	if token.ExternalLeaseId != nil {
+		externalLeaseId = *token.ExternalLeaseId
+	}
 	return common.RDB.Eval(context.Background(), script, []string{
 		getTokenCacheKey(token.Key), getTokenCacheFenceKey(token.Key),
 	},
@@ -86,7 +91,7 @@ return 1`
 		strconv.FormatBool(token.UnlimitedQuota), strconv.FormatBool(token.ModelLimitsEnabled),
 		token.ModelLimits, allowIps, token.Group, strconv.FormatBool(token.CrossGroupRetry),
 		token.AutoGroups, token.RemainQuota, token.UsedQuota,
-		tokenCacheTTLSeconds(),
+		tokenCacheTTLSeconds(), token.Purpose, token.AccountingMode, externalLeaseId,
 	).Int()
 }
 
@@ -101,6 +106,13 @@ func cacheGetTokenByKey(key string) (*Token, error) {
 	}
 	if token.Id <= 0 {
 		return nil, fmt.Errorf("token cache is incomplete")
+	}
+	// 缺少用途/模式的旧或残缺快照不能把受管令牌降格为generic；读真实DB再决定。
+	if token.Purpose == "" || token.AccountingMode == "" {
+		return nil, fmt.Errorf("token cache accounting metadata is incomplete")
+	}
+	if token.ExternalLeaseId != nil && *token.ExternalLeaseId == "" {
+		token.ExternalLeaseId = nil
 	}
 	token.Key = key
 	return &token, nil

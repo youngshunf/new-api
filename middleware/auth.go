@@ -416,7 +416,9 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 		if err != nil {
-			if errors.Is(err, model.ErrDatabase) {
+			if errors.Is(err, model.ErrAudioAccountingUnavailable) {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, err.Error())
+			} else if errors.Is(err, model.ErrDatabase) {
 				common.SysLog("TokenAuth ValidateUserToken database error: " + err.Error())
 				abortWithOpenAiMessage(c, http.StatusInternalServerError,
 					common.TranslateMessage(c, i18n.MsgDatabaseError))
@@ -488,6 +490,10 @@ func TokenAuth() func(c *gin.Context) {
 func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {
 	if token == nil {
 		return fmt.Errorf("token is nil")
+	}
+	if err := model.CheckTokenAccountingMode(token); err != nil {
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, err.Error())
+		return err
 	}
 	c.Set("id", token.UserId)
 	c.Set("token_id", token.Id)

@@ -201,6 +201,9 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 // TryReserveTokenQuota atomically checks and deducts a token quota. Unlimited
 // tokens skip the balance check but still update remain/used accounting.
 func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, error) {
+	if err := checkQuotaTokenAccounting(id); err != nil {
+		return false, err
+	}
 	if quota < 0 {
 		return false, errors.New("quota 不能为负数！")
 	}

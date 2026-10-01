@@ -11,12 +11,14 @@ import (
 func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
 	useUserCacheMiniRedis(t)
 	token := Token{
-		Id:         42,
-		UserId:     7,
-		Key:        "token-auto-groups-cache-key",
-		Name:       "auto-cache",
-		Group:      "auto",
-		AutoGroups: `["vip","default"]`,
+		Id:             42,
+		UserId:         7,
+		Key:            "token-auto-groups-cache-key",
+		Name:           "auto-cache",
+		Group:          "auto",
+		AutoGroups:     `["vip","default"]`,
+		Purpose:        "generic",
+		AccountingMode: "legacy",
 	}
 
 	require.NoError(t, cacheSetTokenForTest(token))

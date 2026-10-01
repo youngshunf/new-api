@@ -280,6 +280,10 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil {
+		common.ApiError(c, fmt.Errorf("普通令牌请求不得设置受管用途、账务模式或租约绑定"))
+		return
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
@@ -375,6 +379,10 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil {
+		common.ApiError(c, fmt.Errorf("普通令牌请求不得设置受管用途、账务模式或租约绑定"))
+		return
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
