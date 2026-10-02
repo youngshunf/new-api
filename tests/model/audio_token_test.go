@@ -63,6 +63,7 @@ func TestTokenAccountingClosedSet(t *testing.T) {
 	}{
 		{name: "legacy_zero"},
 		{name: "legacy_explicit", purpose: "generic", mode: "legacy"},
+		{name: "generic_relay_lease", purpose: "generic", mode: "legacy", external: &lease},
 		{name: "mode_without_purpose", purpose: "generic", mode: "synchronous", want: model.ErrTokenInvalid},
 		{name: "unknown_mode", purpose: "generic", mode: "changed", want: model.ErrTokenInvalid},
 		{name: "unknown_purpose", purpose: "unknown", mode: "synchronous", external: &lease, want: model.ErrTokenInvalid},

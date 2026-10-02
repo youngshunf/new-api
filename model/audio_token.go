@@ -14,9 +14,9 @@ func CheckTokenAccountingMode(token *Token) error {
 	}
 	if token.Purpose == "" || token.Purpose == "generic" {
 		if token.AccountingMode == "" || token.AccountingMode == "legacy" {
-			if token.ExternalLeaseId == nil {
-				return nil
-			}
+			// generic relay lease 仍由可信内部租约入口签发；ExternalLeaseId
+			// 只标识租约归属，不应把普通 LLM lease 误判成音频同步令牌。
+			return nil
 		}
 		return ErrTokenInvalid
 	}
