@@ -7,10 +7,13 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
@@ -26,6 +29,11 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	common.IsMasterNode = false
 	common.RedisEnabled = false
 	t.Setenv("SQL_DSN", "")
+	// 非master现在只验证正式schema；隔离库先建立真实迁移底座。
+	baseline, err := gorm.Open(sqlite.Open(common.SQLitePath), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, baseline.AutoMigrate(&model.Token{}))
+	require.NoError(t, migrations.Apply(baseline))
 	require.NoError(t, model.InitDB())
 	database := model.DB
 	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.Task{}))
