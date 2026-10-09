@@ -52,6 +52,7 @@ func SetInternalRouter(router *gin.Engine) {
 		llmRouter.GET("/model-inventory", controller.GetInternalModelInventory)
 		llmRouter.PUT("/relay-leases/:external_lease_id", controller.PutInternalRelayLease)
 		llmRouter.DELETE("/relay-leases/:external_lease_id", controller.DeleteInternalRelayLease)
+		llmRouter.PUT("/model-groups/:model_group", controller.PutInternalModelGroup)
 		llmRouter.GET("/relay-leases/:external_lease_id/audio-request-settlements/:gateway_request_id", controller.GetInternalAudioRequestSettlement)
 	}
 }

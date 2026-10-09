@@ -91,8 +91,11 @@ type LlmRelayLeaseRequest struct {
 	// CredentialGeneration 是平台侧的凭据代号，单调递增。
 	// 它让「轮换」也幂等：同代重投返回同一枚 Token，代号更大才真正换 Key，代号更小是过期请求。
 	CredentialGeneration int64 `json:"credential_generation"`
-	// ModelLimits 是这条 lease 允许调用的模型白名单，必须非空。
-	// **没有「不限制」这一档**：lease 的存在意义就是把权限收敛到当次策略算出的那个集合。
+	// ModelGroup 是这条 lease 所属的模型组（设计 §8.2.2），必填。可调用集合由组映射决定，
+	// 发布只改组映射、不逐条改写 lease。
+	ModelGroup string `json:"model_group"`
+	// ModelLimits 只表达「这把令牌比所在组更窄」：purpose=generic 时必须为空数组，
+	// 三种独立音频用途必须恰好一个模型（保持单模型同步账务边界）。
 	// NewAPI 侧落库时按逗号拼进 tokens.model_limits（同一个列表的物理表示，不是改名）。
 	ModelLimits []string `json:"model_limits"`
 	// ExpiresTime 是 lease 到期时刻（RFC3339），必填且必须在将来。
@@ -107,6 +110,7 @@ type LlmRelayLeaseView struct {
 	NewApiUserId         int      `json:"newapi_user_id"`
 	NewApiTokenId        int      `json:"newapi_token_id"`
 	CredentialGeneration int64    `json:"credential_generation"`
+	ModelGroup           string   `json:"model_group"`
 	ModelLimits          []string `json:"model_limits"`
 	ExpiresTime          string   `json:"expires_time"`
 	Purpose              string   `json:"purpose,omitempty"`
@@ -120,6 +124,23 @@ type LlmRelayLeaseView struct {
 	// 两者都为 false 就是一次纯幂等重投（或只改了白名单与期限）。
 	Created bool `json:"created"`
 	Rotated bool `json:"rotated"`
+}
+
+// LlmModelGroupRequest 是 PUT /api/internal/v1/llm/model-groups/{model_group} 的入参。
+//
+// 组名只在路径里，不在 body 里重复（同 lease 的幂等键）。
+type LlmModelGroupRequest struct {
+	// PublicationRevision 是平台本次发布世代；组映射按它单调推进，迟到的旧发布被拒。
+	PublicationRevision int64 `json:"publication_revision"`
+	// Models 是该组可调用的模型，允许为空（全停发布）。
+	Models []string `json:"models"`
+}
+
+// LlmModelGroupView 是组写入的回执：写后存量，不是请求回声。
+type LlmModelGroupView struct {
+	ModelGroup          string   `json:"model_group"`
+	PublicationRevision int64    `json:"publication_revision"`
+	Models              []string `json:"models"`
 }
 
 // LlmRelayLeaseRevocation 是 DELETE 的回执。

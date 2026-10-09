@@ -225,6 +225,10 @@ func validateOptionValue(key string, value string) error {
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	}
+	if key == HasnLlmModelGroupsOptionKey {
+		_, err := parseLlmModelGroups(value)
+		return err
+	}
 	return nil
 }
 
@@ -295,6 +299,10 @@ func updateOptionMap(key string, value string) (err error) {
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value
+
+	if key == HasnLlmModelGroupsOptionKey {
+		return applyLlmModelGroupsOption(value)
+	}
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {

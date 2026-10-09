@@ -22,18 +22,15 @@ import (
 
 // Cloud → NewAPI 的内部 LLM 控制面端点（LLM 网关设计 §15.1）。
 //
-// 它只做两件事：交出**完整**模型库存，以及在**调用方给定的账户**下幂等签发/撤销 Relay lease。
+// 它做三件事：交出**完整**模型库存、在**调用方给定的账户**下幂等签发/撤销 Relay lease，
+// 以及按发布世代写模型组映射（设计 §8.2.2）。
 // 这一面没有 principals 接口：账户由 commerce 通道按 workspace 创建，
 // 在 LLM 链路上补建账户会让「账户按什么维度建」有第二个产生方（设计 §15.1）。
 
 const (
-	// maxInternalLlmRequestBody 是 lease 入参的大小上限。
-	// 白名单可能装下整份已发布模型集合，所以比 credit 那条宽，但仍然有界。
-	maxInternalLlmRequestBody = 64 * 1024
-	// maxRelayLeaseModelLimits 是单条 lease 的模型白名单条目上限。
-	maxRelayLeaseModelLimits = 1000
-	// maxRelayLeaseModelNameLength 是单个模型名的长度上限。
-	maxRelayLeaseModelNameLength = 128
+	// maxInternalLlmRequestBody 是 lease 与模型组入参的大小上限。
+	// 组映射可能装下整份已发布模型集合（1000 项 × 128 字节），所以比 credit 那条宽，但仍然有界。
+	maxInternalLlmRequestBody = 192 * 1024
 )
 
 // relayLeaseRequestAllowedFields 是 LlmRelayLeaseRequest 的字段白名单（additionalProperties: false）。
@@ -43,10 +40,17 @@ const (
 var relayLeaseRequestAllowedFields = map[string]struct{}{
 	"newapi_user_id":        {},
 	"credential_generation": {},
+	"model_group":           {},
 	"model_limits":          {},
 	"expires_time":          {},
 	"purpose":               {},
 	"accounting_mode":       {},
+}
+
+// modelGroupRequestAllowedFields 是 LlmModelGroupRequest 的字段闭集，两项都必填。
+var modelGroupRequestAllowedFields = map[string]struct{}{
+	"publication_revision": {},
+	"models":               {},
 }
 
 // GetInternalModelInventory 返回完整模型库存与源 revision。
@@ -200,8 +204,8 @@ func PutInternalRelayLease(c *gin.Context) {
 		return
 	}
 	// 审计只落身份与结论，不落明文（设计 §17.2）。
-	logger.LogInfo(c, fmt.Sprintf("relay lease issued external_lease_id=%s user=%d generation=%d models=%d created=%t rotated=%t",
-		externalLeaseId, spec.NewApiUserId, outcome.Generation, len(spec.ModelLimits), outcome.Created, outcome.Rotated))
+	logger.LogInfo(c, fmt.Sprintf("relay lease issued external_lease_id=%s user=%d generation=%d model_group=%s models=%d created=%t rotated=%t",
+		externalLeaseId, spec.NewApiUserId, outcome.Generation, spec.ModelGroup, len(spec.ModelLimits), outcome.Created, outcome.Rotated))
 
 	// 明文只允许存在于这一个响应体里，不能被任何中间层缓存下来（设计 §10.2）。
 	c.Header("Cache-Control", "no-store")
@@ -210,6 +214,7 @@ func PutInternalRelayLease(c *gin.Context) {
 		NewApiUserId:         outcome.Token.UserId,
 		NewApiTokenId:        outcome.Token.Id,
 		CredentialGeneration: outcome.Generation,
+		ModelGroup:           outcome.Token.ModelGroup,
 		ModelLimits:          outcome.Token.GetModelLimits(),
 		ExpiresTime:          time.Unix(outcome.Token.ExpiredTime, 0).UTC().Format(time.RFC3339),
 		Purpose:              outcome.Token.Purpose,
@@ -278,6 +283,11 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		sort.Strings(unknown)
 		return nil, invalid("unknown field(s): %s", strings.Join(unknown, ", "))
 	}
+	for _, required := range []string{"model_group", "model_limits"} {
+		if value, present := probe[required]; !present || value == nil {
+			return nil, invalid("%s is required", required)
+		}
+	}
 	var request dto.LlmRelayLeaseRequest
 	if err := common.Unmarshal(body, &request); err != nil {
 		return nil, invalid("request body does not match the relay lease schema")
@@ -289,9 +299,12 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if request.CredentialGeneration < 1 {
 		return nil, invalid("credential_generation must be a positive integer")
 	}
-	modelLimits, limitsErr := normalizeRelayLeaseModelLimits(request.ModelLimits)
+	if !model.IsValidLlmModelGroupName(request.ModelGroup) {
+		return nil, invalid("model_group must match ^[a-z][a-z0-9_-]{0,31}$")
+	}
+	modelLimits, limitsErr := model.NormalizeLlmModelNames(request.ModelLimits)
 	if limitsErr != nil {
-		return nil, invalid("%s", limitsErr.Error())
+		return nil, invalid("model_limits: %s", limitsErr.Error())
 	}
 	expiresTime, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(request.ExpiresTime))
 	if parseErr != nil {
@@ -307,11 +320,20 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if accountingErr != nil {
 		return nil, invalid("%s", accountingErr.Error())
 	}
+	// generic lease 的可调用集合完全由模型组决定；独立音频必须钉死单个模型，
+	// 否则一枚同步账务令牌能调用组里的任意模型。
+	if purpose == "generic" && len(modelLimits) != 0 {
+		return nil, invalid("model_limits must be empty for a generic lease; its models come from model_group")
+	}
+	if purpose != "generic" && len(modelLimits) != 1 {
+		return nil, invalid("model_limits must contain exactly one model for a managed audio lease")
+	}
 
 	return &model.RelayLeaseSpec{
 		ExternalLeaseId:      externalLeaseId,
 		NewApiUserId:         request.NewApiUserId,
 		CredentialGeneration: request.CredentialGeneration,
+		ModelGroup:           request.ModelGroup,
 		ModelLimits:          modelLimits,
 		ExpiredTime:          expiresTime.Unix(),
 		Purpose:              purpose,
@@ -319,34 +341,83 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	}, nil
 }
 
-// normalizeRelayLeaseModelLimits 校验模型白名单。
+// PutInternalModelGroup 按发布世代写一个模型组映射。
 //
-// 逗号是硬约束：NewAPI 把白名单按逗号拼进 tokens.model_limits，名字里带逗号会在读回来时
-// 裂成两个模型名——那意味着 lease 实际放行的集合与平台以为的不是同一个。
-func normalizeRelayLeaseModelLimits(models []string) ([]string, error) {
-	if len(models) == 0 {
-		return nil, fmt.Errorf("model_limits must contain at least one model; an unrestricted relay lease is not a supported shape")
+// PUT /api/internal/v1/llm/model-groups/{model_group}
+func PutInternalModelGroup(c *gin.Context) {
+	groupName := c.Param("model_group")
+	if !model.IsValidLlmModelGroupName(groupName) {
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.RelayLeaseErrorInvalidRequest,
+			"model_group must match ^[a-z][a-z0-9_-]{0,31}$", false)
+		return
 	}
-	if len(models) > maxRelayLeaseModelLimits {
-		return nil, fmt.Errorf("model_limits exceeds %d entries", maxRelayLeaseModelLimits)
+	request, decodeErr := decodeModelGroupRequest(c)
+	if decodeErr != nil {
+		middleware.AbortWithInternalServiceError(c, decodeErr.HTTPStatus, decodeErr.Code, decodeErr.Message, decodeErr.Retryable)
+		return
 	}
-	seen := make(map[string]struct{}, len(models))
-	normalized := make([]string, 0, len(models))
-	for _, name := range models {
-		if name == "" || strings.TrimSpace(name) != name {
-			return nil, fmt.Errorf("model_limits entries must be non-empty and free of surrounding whitespace")
-		}
-		if len(name) > maxRelayLeaseModelNameLength {
-			return nil, fmt.Errorf("model_limits entry exceeds %d chars", maxRelayLeaseModelNameLength)
-		}
-		if strings.Contains(name, ",") {
-			return nil, fmt.Errorf("model_limits entries must not contain a comma")
-		}
-		if _, duplicated := seen[name]; duplicated {
-			return nil, fmt.Errorf("model_limits contains duplicate entry %q", name)
-		}
-		seen[name] = struct{}{}
-		normalized = append(normalized, name)
+	stored, putErr := model.PutLlmModelGroup(groupName, request.PublicationRevision, request.Models)
+	if putErr != nil {
+		logger.LogWarn(c, fmt.Sprintf("model group rejected model_group=%s publication_revision=%d code=%s",
+			groupName, request.PublicationRevision, putErr.Code))
+		middleware.AbortWithInternalServiceError(c, putErr.HTTPStatus, putErr.Code, putErr.Message, putErr.Retryable)
+		return
 	}
-	return normalized, nil
+	logger.LogInfo(c, fmt.Sprintf("model group applied model_group=%s publication_revision=%d models=%d",
+		groupName, stored.PublicationRevision, len(stored.Models)))
+	c.JSON(http.StatusOK, dto.LlmModelGroupView{
+		ModelGroup:          groupName,
+		PublicationRevision: stored.PublicationRevision,
+		Models:              stored.Models,
+	})
+}
+
+// decodeModelGroupRequest 解析模型组入参：字段闭集、两项必填、名单逐项校验。
+func decodeModelGroupRequest(c *gin.Context) (*dto.LlmModelGroupRequest, *model.RelayLeaseError) {
+	invalid := func(format string, args ...any) *model.RelayLeaseError {
+		return &model.RelayLeaseError{
+			HTTPStatus: http.StatusBadRequest,
+			Code:       model.RelayLeaseErrorInvalidRequest,
+			Message:    fmt.Sprintf(format, args...),
+		}
+	}
+	body, readErr := io.ReadAll(io.LimitReader(c.Request.Body, maxInternalLlmRequestBody+1))
+	if readErr != nil {
+		return nil, invalid("failed to read request body")
+	}
+	if len(body) > maxInternalLlmRequestBody {
+		return nil, invalid("request body exceeds %d bytes", maxInternalLlmRequestBody)
+	}
+	var probe map[string]any
+	if err := common.Unmarshal(body, &probe); err != nil {
+		return nil, invalid("request body must be a JSON object")
+	}
+	unknown := make([]string, 0, 2)
+	for key := range probe {
+		if _, ok := modelGroupRequestAllowedFields[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, invalid("unknown field(s): %s", strings.Join(unknown, ", "))
+	}
+	for required := range modelGroupRequestAllowedFields {
+		if value, present := probe[required]; !present || value == nil {
+			return nil, invalid("%s is required", required)
+		}
+	}
+	var request dto.LlmModelGroupRequest
+	if err := common.Unmarshal(body, &request); err != nil {
+		return nil, invalid("request body does not match the model group schema")
+	}
+	if request.PublicationRevision < 1 {
+		return nil, invalid("publication_revision must be a positive integer")
+	}
+	models, namesErr := model.NormalizeLlmModelNames(request.Models)
+	if namesErr != nil {
+		return nil, invalid("models: %s", namesErr.Error())
+	}
+	request.Models = models
+	return &request, nil
 }

@@ -34,6 +34,9 @@ type Token struct {
 	Purpose         string  `json:"purpose" gorm:"column:purpose;->;-:migration"`
 	AccountingMode  string  `json:"accounting_mode" gorm:"column:accounting_mode;->;-:migration"`
 	ExternalLeaseId *string `json:"external_lease_id" gorm:"column:external_lease_id;->;-:migration"`
+	// ModelGroup 是 Relay lease 所属的模型组（V002 正式迁移拥有该列）。非空时可调用集合由
+	// HasnLlmModelGroups 决定，见 LlmModelGroupModelSet；空串的令牌不受模型组约束。
+	ModelGroup string `json:"model_group" gorm:"column:model_group;->;-:migration"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {

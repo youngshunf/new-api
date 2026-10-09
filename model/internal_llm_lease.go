@@ -197,7 +197,10 @@ type RelayLeaseSpec struct {
 	ExternalLeaseId      string
 	NewApiUserId         int
 	CredentialGeneration int64
-	ModelLimits          []string
+	// ModelGroup 是令牌所属模型组；可调用集合由组映射决定（设计 §8.2.2）。
+	ModelGroup string
+	// ModelLimits 只表达「比所在组更窄」：generic 为空，独立音频恰好一个模型。
+	ModelLimits []string
 	// ExpiredTime 是 Unix 秒。lease 一律有期限，这里不接受 -1（永不过期）。
 	ExpiredTime int64
 	// Purpose 与 AccountingMode 是可信租约控制面的受管音频资格；generic/legacy 保持旧租约。
@@ -231,7 +234,7 @@ func RelayTokenPrefix(token *Token) string {
 //
 // 幂等语义（幂等键是 external_lease_id）：
 //   - 不在册            → 新建，created=true；
-//   - 在册且同代        → 返回同一枚 Token（明文不变），按本次入参刷新白名单与期限；
+//   - 在册且同代        → 返回同一枚 Token（明文不变），按本次入参刷新模型组、收窄名单与期限；
 //   - 在册且代号更大    → 换 Key（rotated=true），Token 行不变，旧明文当场作废；
 //   - 在册且代号更小    → 409，这是一条过期请求，绝不把已经轮换过的凭据倒回去；
 //   - 在册但属于别的账户 → 409，lease 换账户等于换扣费主体。
@@ -279,18 +282,19 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			ExpiredTime:  spec.ExpiredTime,
 			// lease 不建立第二套积分余额：额度从发起空间的账户扣（设计 §10.1）。
 			UnlimitedQuota:     true,
-			ModelLimitsEnabled: true,
+			ModelLimitsEnabled: len(spec.ModelLimits) > 0,
 			ModelLimits:        modelLimits,
 			Purpose:            spec.Purpose,
 			AccountingMode:     spec.AccountingMode,
 			ExternalLeaseId:    stringPointer(spec.ExternalLeaseId),
+			ModelGroup:         spec.ModelGroup,
 		}
 		if insertErr := DB.Table("tokens").Create(map[string]any{
 			"user_id": lease.UserId, "name": lease.Name, "key": lease.Key, "status": lease.Status,
 			"created_time": lease.CreatedTime, "accessed_time": lease.AccessedTime, "expired_time": lease.ExpiredTime,
 			"unlimited_quota": lease.UnlimitedQuota, "model_limits_enabled": lease.ModelLimitsEnabled,
 			"model_limits": lease.ModelLimits, "purpose": lease.Purpose, "accounting_mode": lease.AccountingMode,
-			"external_lease_id": spec.ExternalLeaseId,
+			"external_lease_id": spec.ExternalLeaseId, "model_group": lease.ModelGroup,
 		}).Error; insertErr != nil {
 			return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 				"failed to persist the lease")
@@ -320,8 +324,9 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	updated.Status = common.TokenStatusEnabled
 	updated.ExpiredTime = spec.ExpiredTime
 	updated.UnlimitedQuota = true
-	updated.ModelLimitsEnabled = true
+	updated.ModelLimitsEnabled = len(spec.ModelLimits) > 0
 	updated.ModelLimits = modelLimits
+	updated.ModelGroup = spec.ModelGroup
 	updated.Purpose = spec.Purpose
 	updated.AccountingMode = spec.AccountingMode
 	updated.ExternalLeaseId = stringPointer(spec.ExternalLeaseId)
@@ -340,11 +345,13 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	if cacheErr := invalidateTokenCacheForMutation(existing.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate relay lease token cache: " + cacheErr.Error())
 	}
-	if updateErr := DB.Model(&Token{Id: existing.Id}).Updates(map[string]any{
+	// 走 Table 而不是 Model(&Token{})：purpose/accounting_mode/external_lease_id/model_group 在结构体上
+	// 是只读映射（正式迁移拥有这些列），经 Model 的 map Updates 会被 GORM 静默丢弃。
+	if updateErr := DB.Table("tokens").Where("id = ?", existing.Id).Updates(map[string]any{
 		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime,
 		"unlimited_quota": updated.UnlimitedQuota, "model_limits_enabled": updated.ModelLimitsEnabled,
 		"model_limits": updated.ModelLimits, "purpose": updated.Purpose, "accounting_mode": updated.AccountingMode,
-		"external_lease_id": spec.ExternalLeaseId,
+		"external_lease_id": spec.ExternalLeaseId, "model_group": updated.ModelGroup,
 	}).Error; updateErr != nil {
 		return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 			"failed to update the lease")

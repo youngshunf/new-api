@@ -503,7 +503,21 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	if !token.UnlimitedQuota {
 		c.Set("token_quota", token.RemainQuota)
 	}
-	if token.ModelLimitsEnabled {
+	if token.ModelGroup != "" {
+		// Relay lease：可调用 = 模型组 ∩ 令牌自身收窄名单（设计 §8.2.2）。组不存在即空集全拒，
+		// 写进既有上下文后 distributor 与 /v1/models 沿用原判定，不另起第二条检查。
+		allowed := model.LlmModelGroupModelSet(token.ModelGroup)
+		if token.ModelLimitsEnabled {
+			narrowed := token.GetModelLimitsMap()
+			for name := range allowed {
+				if !narrowed[name] {
+					delete(allowed, name)
+				}
+			}
+		}
+		c.Set("token_model_limit_enabled", true)
+		c.Set("token_model_limit", allowed)
+	} else if token.ModelLimitsEnabled {
 		c.Set("token_model_limit_enabled", true)
 		c.Set("token_model_limit", token.GetModelLimitsMap())
 	} else {

@@ -136,7 +136,7 @@ func apply(db *gorm.DB) error {
 			return err
 		}
 	}
-	return verifyAudioSchema(db)
+	return verifyTargetSchema(db)
 }
 
 // Verify 是非master启动门；只核版本、摘要和真实目标schema，不执行DDL。
@@ -162,7 +162,41 @@ func Verify(db *gorm.DB) error {
 			return fmt.Errorf("必需迁移未完成或摘要错误：%s", name)
 		}
 	}
-	return verifyAudioSchema(db)
+	return verifyTargetSchema(db)
+}
+
+// verifyTargetSchema 核全部正式迁移完成后的目标 schema。
+//
+// 逐文件之后只核 V001 的音频底座；令牌模型组列由 V002 建立，只能在全部文件完成后核，
+// 否则全新库刚跑完 V001 就会因为「缺 V002 的列」被判失败。
+func verifyTargetSchema(db *gorm.DB) error {
+	if err := verifyAudioSchema(db); err != nil {
+		return err
+	}
+	columns, err := db.Migrator().ColumnTypes("tokens")
+	if err != nil {
+		return err
+	}
+	for _, column := range columns {
+		if column.Name() != "model_group" {
+			continue
+		}
+		if nullable, known := column.Nullable(); known && nullable {
+			return fmt.Errorf("目标列可空性错误：tokens.model_group")
+		}
+		wantType := "varchar"
+		if db.Dialector.Name() == "sqlite" {
+			wantType = "text"
+		}
+		if strings.ToLower(column.DatabaseTypeName()) != wantType {
+			return fmt.Errorf("目标令牌列类型错误：tokens.model_group")
+		}
+		if length, known := column.Length(); wantType == "varchar" && known && length != 32 {
+			return fmt.Errorf("目标令牌列长度错误：tokens.model_group")
+		}
+		return nil
+	}
+	return fmt.Errorf("缺少目标列：tokens.model_group")
 }
 
 func verifyAudioSchema(db *gorm.DB) error {

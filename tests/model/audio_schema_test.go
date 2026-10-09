@@ -23,6 +23,7 @@ func TestAudioSchemaCannotBeCreatedByLegacyAutoMigrate(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.Token{}))
 	assert.False(t, db.Migrator().HasColumn("tokens", "purpose"), "新用途列必须由正式SQLrunner创建，不由上游AutoMigrate代建")
+	assert.False(t, db.Migrator().HasColumn("tokens", "model_group"), "模型组列同样只由正式迁移V002创建")
 	assert.False(t, db.Migrator().HasTable("audio_request_settlements"))
 }
 
@@ -143,6 +144,11 @@ func TestFormalMigrationCreatesRequiredAudioSchema(t *testing.T) {
 	require.NoError(t, migrations.Verify(db))
 	assert.True(t, db.Migrator().HasColumn("tokens", "purpose"), "正式迁移后应有持久用途，不允许只内存或自报模式")
 	assert.True(t, db.Migrator().HasTable("audio_request_settlements"), "table-first真实表必须在生成业务model前存在")
+	assert.True(t, db.Migrator().HasColumn("tokens", "model_group"), "V002必须建立令牌模型组列")
+	require.NoError(t, db.Table("tokens").Create(map[string]any{"id": 130001, "user_id": 1, "key": "tk_model_group_default"}).Error)
+	var group string
+	require.NoError(t, db.Table("tokens").Where("id = ?", 130001).Pluck("model_group", &group).Error)
+	assert.Equal(t, "", group, "上游自建令牌缺省不属于任何模型组")
 	require.NoError(t, db.Exec("DROP INDEX idx_tokens_external_lease_id").Error)
 	require.NoError(t, db.Exec("CREATE INDEX idx_tokens_external_lease_id ON tokens(external_lease_id)").Error)
 	assert.Error(t, migrations.Verify(db), "同名普通索引不得冒充唯一外部绑定")
@@ -192,6 +198,8 @@ func TestFormalMigrationRejectsWrongPartialSchema(t *testing.T) {
 	for _, malformed := range []string{
 		"ALTER TABLE tokens ADD COLUMN purpose INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE tokens ADD COLUMN purpose TEXT NULL",
+		"ALTER TABLE tokens ADD COLUMN model_group INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE tokens ADD COLUMN model_group TEXT NULL",
 	} {
 		t.Run(malformed, func(t *testing.T) {
 			db, err := gorm.Open(sqlite.Open(t.TempDir()+"/wrong.db"), &gorm.Config{})

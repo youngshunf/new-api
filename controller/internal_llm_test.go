@@ -302,12 +302,14 @@ func callRelayLease(t *testing.T, engine *gin.Engine, method string, leaseId str
 	return recorder
 }
 
-func leaseRequestBody(t *testing.T, accountId int, generation int64, models []string, expiresTime time.Time) string {
+// leaseRequestBody 构造 generic lease 入参：可调用集合完全来自模型组，model_limits 恒为空。
+func leaseRequestBody(t *testing.T, accountId int, generation int64, modelGroup string, expiresTime time.Time) string {
 	t.Helper()
 	payload, err := common.Marshal(dto.LlmRelayLeaseRequest{
 		NewApiUserId:         accountId,
 		CredentialGeneration: generation,
-		ModelLimits:          models,
+		ModelGroup:           modelGroup,
+		ModelLimits:          []string{},
 		ExpiresTime:          expiresTime.UTC().Format(time.RFC3339),
 	})
 	require.NoError(t, err)
@@ -342,7 +344,7 @@ func TestPutRelayLeaseIssuesUnderTheGivenAccount(t *testing.T) {
 	expires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 
 	recorder := callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o", "dall-e-3"}, expires))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", expires))
 	view := decodeLeaseView(t, recorder)
 
 	assert.True(t, view.Created)
@@ -350,7 +352,8 @@ func TestPutRelayLeaseIssuesUnderTheGivenAccount(t *testing.T) {
 	assert.Equal(t, leaseTestId, view.ExternalLeaseId)
 	assert.Equal(t, leaseTestAccountId, view.NewApiUserId)
 	assert.Equal(t, int64(1), view.CredentialGeneration)
-	assert.Equal(t, []string{"gpt-4o", "dall-e-3"}, view.ModelLimits)
+	assert.Equal(t, "default", view.ModelGroup)
+	assert.Equal(t, []string{}, view.ModelLimits)
 	assert.Equal(t, expires.UTC().Format(time.RFC3339), view.ExpiresTime)
 	assert.True(t, strings.HasPrefix(view.RelayToken, "sk-"))
 	assert.True(t, strings.HasPrefix(view.RelayToken, view.TokenPrefix))
@@ -362,8 +365,9 @@ func TestPutRelayLeaseIssuesUnderTheGivenAccount(t *testing.T) {
 	assert.Equal(t, leaseTestAccountId, stored.UserId)
 	assert.Equal(t, "hasn-lease:"+leaseTestId+":g1", stored.Name)
 	assert.Equal(t, "sk-"+stored.Key, view.RelayToken)
-	assert.True(t, stored.ModelLimitsEnabled)
-	assert.Equal(t, "gpt-4o,dall-e-3", stored.ModelLimits)
+	assert.Equal(t, "default", stored.ModelGroup)
+	assert.False(t, stored.ModelLimitsEnabled, "generic lease 的可调用集合来自模型组，不在令牌上逐条写名单")
+	assert.Equal(t, "", stored.ModelLimits)
 	// lease 不建立第二套积分余额：额度从发起空间的账户扣（设计 §10.1）。
 	assert.True(t, stored.UnlimitedQuota)
 	assert.Equal(t, expires.Unix(), stored.ExpiredTime)
@@ -374,7 +378,7 @@ func TestPutRelayLeaseReplayReturnsTheSameToken(t *testing.T) {
 	db := setupRelayLeaseTestDB(t)
 	engine := newRelayLeaseEngine()
 	expires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
-	body := leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, expires)
+	body := leaseRequestBody(t, leaseTestAccountId, 1, "default", expires)
 
 	first := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId, body))
 	second := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId, body))
@@ -386,7 +390,7 @@ func TestPutRelayLeaseReplayReturnsTheSameToken(t *testing.T) {
 	assert.Equal(t, int64(1), countLeaseTokens(t, db), "同一个幂等键必须只对应一枚 Token")
 }
 
-// 同键、不同 body：白名单与期限被就地更新，Token 本身不变——PUT 是 upsert，不是「只创建一次」。
+// 同键、不同 body：模型组与期限被就地更新，Token 本身不变——PUT 是 upsert，不是「只创建一次」。
 func TestPutRelayLeaseSameKeyDifferentBodyUpdatesInPlace(t *testing.T) {
 	db := setupRelayLeaseTestDB(t)
 	engine := newRelayLeaseEngine()
@@ -394,19 +398,19 @@ func TestPutRelayLeaseSameKeyDifferentBodyUpdatesInPlace(t *testing.T) {
 	secondExpires := time.Now().Add(48 * time.Hour).Truncate(time.Second)
 
 	first := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, firstExpires)))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", firstExpires)))
 	second := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"claude-4", "gpt-4o"}, secondExpires)))
+		leaseRequestBody(t, leaseTestAccountId, 1, "pro", secondExpires)))
 
 	assert.Equal(t, first.NewApiTokenId, second.NewApiTokenId)
 	assert.Equal(t, first.RelayToken, second.RelayToken, "同代重投不换 Key")
 	assert.False(t, second.Created)
 	assert.False(t, second.Rotated)
-	assert.Equal(t, []string{"claude-4", "gpt-4o"}, second.ModelLimits)
+	assert.Equal(t, "pro", second.ModelGroup)
 
 	stored, err := model.GetTokenById(second.NewApiTokenId)
 	require.NoError(t, err)
-	assert.Equal(t, "claude-4,gpt-4o", stored.ModelLimits)
+	assert.Equal(t, "pro", stored.ModelGroup, "改组就地生效，不换 Key")
 	assert.Equal(t, secondExpires.Unix(), stored.ExpiredTime)
 	assert.Equal(t, int64(1), countLeaseTokens(t, db))
 }
@@ -418,9 +422,9 @@ func TestPutRelayLeaseRotatesOnHigherGeneration(t *testing.T) {
 	expires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 
 	first := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, expires)))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", expires)))
 	rotated := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 2, []string{"gpt-4o"}, expires)))
+		leaseRequestBody(t, leaseTestAccountId, 2, "default", expires)))
 
 	assert.True(t, rotated.Rotated)
 	assert.False(t, rotated.Created)
@@ -443,9 +447,9 @@ func TestPutRelayLeaseRejectsStaleGeneration(t *testing.T) {
 	expires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 
 	current := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 3, []string{"gpt-4o"}, expires)))
+		leaseRequestBody(t, leaseTestAccountId, 3, "default", expires)))
 	recorder := callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 2, []string{"gpt-4o"}, expires))
+		leaseRequestBody(t, leaseTestAccountId, 2, "default", expires))
 
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	assert.Equal(t, model.RelayLeaseErrorStaleGeneration, decodeInternalError(t, recorder).Code)
@@ -463,9 +467,9 @@ func TestPutRelayLeaseRejectsAnotherAccount(t *testing.T) {
 	expires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 
 	decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, expires)))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", expires)))
 	recorder := callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestOtherAccountId, 1, []string{"gpt-4o"}, expires))
+		leaseRequestBody(t, leaseTestOtherAccountId, 1, "default", expires))
 
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	assert.Equal(t, model.RelayLeaseErrorAccountMismatch, decodeInternalError(t, recorder).Code)
@@ -478,7 +482,7 @@ func TestPutRelayLeaseNeverProvisionsTheAccount(t *testing.T) {
 	engine := newRelayLeaseEngine()
 
 	recorder := callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, 4242, 1, []string{"gpt-4o"}, time.Now().Add(time.Hour)))
+		leaseRequestBody(t, 4242, 1, "default", time.Now().Add(time.Hour)))
 
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	assert.Equal(t, model.RelayLeaseErrorAccountNotFound, decodeInternalError(t, recorder).Code)
@@ -491,27 +495,35 @@ func TestPutRelayLeaseNeverProvisionsTheAccount(t *testing.T) {
 
 func TestPutRelayLeaseRejectsInvalidRequests(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	valid := `"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"` + future + `"`
+	audio := `"newapi_user_id":7,"credential_generation":1,"model_group":"default","expires_time":"` + future + `","purpose":"audio.tts","accounting_mode":"synchronous"`
 	cases := []struct {
 		name    string
 		leaseId string
 		body    string
 	}{
-		{"uppercase lease id", "01J9LEASE", `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"lease id with underscore", "lease_a", `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"lease id with percent", "lease%25a", `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"lease id starting with dot", ".lease", `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"unknown field", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `","rotate":true}`},
-		{"idempotency key duplicated in body", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `","external_lease_id":"x"}`},
-		{"zero account", leaseTestId, `{"newapi_user_id":0,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"zero generation", leaseTestId, `{"newapi_user_id":7,"credential_generation":0,"model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
-		{"empty model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":[],"expires_time":"` + future + `"}`},
-		{"missing model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"expires_time":"` + future + `"}`},
-		{"model name with comma", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o,dall-e-3"],"expires_time":"` + future + `"}`},
-		{"duplicate model name", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o","gpt-4o"],"expires_time":"` + future + `"}`},
-		{"model name with whitespace", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":[" gpt-4o"],"expires_time":"` + future + `"}`},
-		{"expires time in the past", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"2020-01-01T00:00:00Z"}`},
-		{"expires time not rfc3339", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"],"expires_time":"永远"}`},
-		{"missing expires time", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":["gpt-4o"]}`},
+		{"uppercase lease id", "01J9LEASE", `{` + valid + `}`},
+		{"lease id with underscore", "lease_a", `{` + valid + `}`},
+		{"lease id with percent", "lease%25a", `{` + valid + `}`},
+		{"lease id starting with dot", ".lease", `{` + valid + `}`},
+		{"unknown field", leaseTestId, `{` + valid + `,"rotate":true}`},
+		{"idempotency key duplicated in body", leaseTestId, `{` + valid + `,"external_lease_id":"x"}`},
+		{"zero account", leaseTestId, `{"newapi_user_id":0,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"` + future + `"}`},
+		{"zero generation", leaseTestId, `{"newapi_user_id":7,"credential_generation":0,"model_group":"default","model_limits":[],"expires_time":"` + future + `"}`},
+		{"missing model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_limits":[],"expires_time":"` + future + `"}`},
+		{"null model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":null,"model_limits":[],"expires_time":"` + future + `"}`},
+		{"empty model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"","model_limits":[],"expires_time":"` + future + `"}`},
+		{"uppercase model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"Default","model_limits":[],"expires_time":"` + future + `"}`},
+		{"missing model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","expires_time":"` + future + `"}`},
+		{"null model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":null,"expires_time":"` + future + `"}`},
+		{"generic lease narrowed by model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
+		{"audio lease without model", leaseTestId, `{` + audio + `,"model_limits":[]}`},
+		{"audio lease with two models", leaseTestId, `{` + audio + `,"model_limits":["tts-1","tts-1-hd"]}`},
+		{"model name with comma", leaseTestId, `{` + audio + `,"model_limits":["tts-1,tts-1-hd"]}`},
+		{"model name with whitespace", leaseTestId, `{` + audio + `,"model_limits":[" tts-1"]}`},
+		{"expires time in the past", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"2020-01-01T00:00:00Z"}`},
+		{"expires time not rfc3339", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"永远"}`},
+		{"missing expires time", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[]}`},
 		{"body is not a json object", leaseTestId, `[]`},
 	}
 
@@ -525,6 +537,127 @@ func TestPutRelayLeaseRejectsInvalidRequests(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
 			assert.Equal(t, model.RelayLeaseErrorInvalidRequest, decodeInternalError(t, recorder).Code)
 			assert.Equal(t, int64(0), countLeaseTokens(t, db), "被拒的请求不得留下 Token")
+		})
+	}
+}
+
+// 独立音频 lease 钉死单个模型：令牌自身收窄名单生效，同时仍属于模型组。
+func TestPutRelayLeaseManagedAudioKeepsSingleModel(t *testing.T) {
+	setupRelayLeaseTestDB(t)
+	engine := newRelayLeaseEngine()
+	expires := time.Now().Add(15 * time.Minute).Truncate(time.Second)
+	body := `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["tts-1"],"expires_time":"` +
+		expires.UTC().Format(time.RFC3339) + `","purpose":"audio.tts","accounting_mode":"synchronous"}`
+
+	view := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, "01j9audio.demo", body))
+
+	assert.Equal(t, "default", view.ModelGroup)
+	assert.Equal(t, []string{"tts-1"}, view.ModelLimits)
+	assert.Equal(t, "audio.tts", view.Purpose)
+	stored, err := model.GetTokenById(view.NewApiTokenId)
+	require.NoError(t, err)
+	assert.True(t, stored.ModelLimitsEnabled)
+	assert.Equal(t, "tts-1", stored.ModelLimits)
+	assert.Equal(t, "default", stored.ModelGroup)
+}
+
+// ---------------------------------------------------------------------------
+// 模型组端点：发布只写组映射，按发布世代单调（设计 §8.2.2）
+// ---------------------------------------------------------------------------
+
+func setupModelGroupTestDB(t *testing.T) {
+	t.Helper()
+	db := setupRelayLeaseTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Option{}))
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap == nil {
+		common.OptionMap = map[string]string{}
+	}
+	common.OptionMapRWMutex.Unlock()
+	require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, ""))
+	t.Cleanup(func() {
+		require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, ""))
+	})
+}
+
+func callModelGroup(t *testing.T, group string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.PUT("/api/internal/v1/llm/model-groups/:model_group", PutInternalModelGroup)
+	request := httptest.NewRequest(http.MethodPut, "/api/internal/v1/llm/model-groups/"+group, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func decodeModelGroupView(t *testing.T, recorder *httptest.ResponseRecorder) dto.LlmModelGroupView {
+	t.Helper()
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var view dto.LlmModelGroupView
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &view))
+	return view
+}
+
+func TestPutModelGroupAdvancesByPublicationRevision(t *testing.T) {
+	setupModelGroupTestDB(t)
+
+	first := decodeModelGroupView(t, callModelGroup(t, "default", `{"publication_revision":7,"models":["gpt-4o","claude-4"]}`))
+	assert.Equal(t, dto.LlmModelGroupView{ModelGroup: "default", PublicationRevision: 7, Models: []string{"claude-4", "gpt-4o"}}, first)
+	assert.Equal(t, map[string]bool{"claude-4": true, "gpt-4o": true}, model.LlmModelGroupModelSet("default"))
+
+	replay := decodeModelGroupView(t, callModelGroup(t, "default", `{"publication_revision":7,"models":["claude-4","gpt-4o"]}`))
+	assert.Equal(t, first, replay, "同世代同集合是幂等重放")
+
+	conflict := callModelGroup(t, "default", `{"publication_revision":7,"models":["gpt-4o"]}`)
+	require.Equal(t, http.StatusConflict, conflict.Code)
+	assert.Equal(t, model.LlmModelGroupErrorRevisionConflict, decodeInternalError(t, conflict).Code)
+
+	stale := callModelGroup(t, "default", `{"publication_revision":6,"models":["gpt-4o"]}`)
+	require.Equal(t, http.StatusConflict, stale.Code)
+	failure := decodeInternalError(t, stale)
+	assert.Equal(t, model.LlmModelGroupErrorStaleRevision, failure.Code)
+	assert.False(t, failure.Retryable)
+
+	disabled := decodeModelGroupView(t, callModelGroup(t, "default", `{"publication_revision":8,"models":[]}`))
+	assert.Equal(t, dto.LlmModelGroupView{ModelGroup: "default", PublicationRevision: 8, Models: []string{}}, disabled)
+	assert.Empty(t, model.LlmModelGroupModelSet("default"))
+}
+
+func TestPutModelGroupRejectsInvalidRequests(t *testing.T) {
+	tooMany := make([]string, 1001)
+	for index := range tooMany {
+		tooMany[index] = fmt.Sprintf(`"m%d"`, index)
+	}
+	cases := []struct {
+		name  string
+		group string
+		body  string
+	}{
+		{"uppercase group", "Default", `{"publication_revision":1,"models":[]}`},
+		{"group starting with digit", "1default", `{"publication_revision":1,"models":[]}`},
+		{"group too long", strings.Repeat("a", 33), `{"publication_revision":1,"models":[]}`},
+		{"missing models", "default", `{"publication_revision":1}`},
+		{"null models", "default", `{"publication_revision":1,"models":null}`},
+		{"missing revision", "default", `{"models":[]}`},
+		{"zero revision", "default", `{"publication_revision":0,"models":[]}`},
+		{"fractional revision", "default", `{"publication_revision":1.5,"models":[]}`},
+		{"unknown field", "default", `{"publication_revision":1,"models":[],"model_group":"default"}`},
+		{"duplicate model", "default", `{"publication_revision":1,"models":["gpt-4o","gpt-4o"]}`},
+		{"model name too long", "default", `{"publication_revision":1,"models":["` + strings.Repeat("m", 129) + `"]}`},
+		{"too many models", "default", `{"publication_revision":1,"models":[` + strings.Join(tooMany, ",") + `]}`},
+		{"body is not a json object", "default", `[]`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			setupModelGroupTestDB(t)
+
+			recorder := callModelGroup(t, testCase.group, testCase.body)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+			assert.Equal(t, model.RelayLeaseErrorInvalidRequest, decodeInternalError(t, recorder).Code)
+			assert.Empty(t, model.LlmModelGroupModelSet("default"), "被拒的请求不得改变组映射")
 		})
 	}
 }
@@ -545,7 +678,7 @@ func TestPutRelayLeaseIgnoresLookalikeTokenNames(t *testing.T) {
 	require.NoError(t, db.Create(lookalike).Error)
 
 	view := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, time.Now().Add(time.Hour))))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", time.Now().Add(time.Hour))))
 
 	assert.True(t, view.Created)
 	assert.NotEqual(t, lookalike.Id, view.NewApiTokenId)
@@ -561,7 +694,7 @@ func TestDeleteRelayLeaseIsIdempotent(t *testing.T) {
 	engine := newRelayLeaseEngine()
 
 	issued := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, []string{"gpt-4o"}, time.Now().Add(time.Hour))))
+		leaseRequestBody(t, leaseTestAccountId, 1, "default", time.Now().Add(time.Hour))))
 
 	firstDelete := callRelayLease(t, engine, http.MethodDelete, leaseTestId, "")
 	require.Equal(t, http.StatusOK, firstDelete.Code)
