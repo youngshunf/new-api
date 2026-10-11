@@ -302,7 +302,7 @@ func callRelayLease(t *testing.T, engine *gin.Engine, method string, leaseId str
 	return recorder
 }
 
-// leaseRequestBody 构造 generic lease 入参：可调用集合完全来自模型组，model_limits 恒为空。
+// leaseRequestBody 构造 Runtime 的 generic lease 入参：可调用集合来自模型组，名单为空。
 func leaseRequestBody(t *testing.T, accountId int, generation int64, modelGroup string, expiresTime time.Time) string {
 	t.Helper()
 	payload, err := common.Marshal(dto.LlmRelayLeaseRequest{
@@ -516,7 +516,7 @@ func TestPutRelayLeaseRejectsInvalidRequests(t *testing.T) {
 		{"uppercase model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"Default","model_limits":[],"expires_time":"` + future + `"}`},
 		{"missing model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","expires_time":"` + future + `"}`},
 		{"null model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":null,"expires_time":"` + future + `"}`},
-		{"generic lease narrowed by model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
+		{"generic lease with two models", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o","tts-1"],"expires_time":"` + future + `"}`},
 		{"audio lease without model", leaseTestId, `{` + audio + `,"model_limits":[]}`},
 		{"audio lease with two models", leaseTestId, `{` + audio + `,"model_limits":["tts-1","tts-1-hd"]}`},
 		{"model name with comma", leaseTestId, `{` + audio + `,"model_limits":["tts-1,tts-1-hd"]}`},

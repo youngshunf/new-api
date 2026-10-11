@@ -199,7 +199,7 @@ type RelayLeaseSpec struct {
 	CredentialGeneration int64
 	// ModelGroup 是令牌所属模型组；可调用集合由组映射决定（设计 §8.2.2）。
 	ModelGroup string
-	// ModelLimits 只表达「比所在组更窄」：generic 为空，独立音频恰好一个模型。
+	// ModelLimits 只表达「比所在组更窄」：Runtime 为空，普通 call 与独立音频恰好一个模型。
 	ModelLimits []string
 	// ExpiredTime 是 Unix 秒。lease 一律有期限，这里不接受 -1（永不过期）。
 	ExpiredTime int64

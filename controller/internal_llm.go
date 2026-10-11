@@ -320,10 +320,10 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if accountingErr != nil {
 		return nil, invalid("%s", accountingErr.Error())
 	}
-	// generic lease 的可调用集合完全由模型组决定；独立音频必须钉死单个模型，
-	// 否则一枚同步账务令牌能调用组里的任意模型。
-	if purpose == "generic" && len(modelLimits) != 0 {
-		return nil, invalid("model_limits must be empty for a generic lease; its models come from model_group")
+	// generic 的 Runtime 租约使用空名单，普通 call 租约用单模型名单与模型组求交。
+	// 独立音频仍必须钉死单个模型，保持现有同步账务边界。
+	if purpose == "generic" && len(modelLimits) > 1 {
+		return nil, invalid("model_limits must contain at most one model for a generic lease")
 	}
 	if purpose != "generic" && len(modelLimits) != 1 {
 		return nil, invalid("model_limits must contain exactly one model for a managed audio lease")

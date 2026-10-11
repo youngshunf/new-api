@@ -94,7 +94,7 @@ type LlmRelayLeaseRequest struct {
 	// ModelGroup 是这条 lease 所属的模型组（设计 §8.2.2），必填。可调用集合由组映射决定，
 	// 发布只改组映射、不逐条改写 lease。
 	ModelGroup string `json:"model_group"`
-	// ModelLimits 只表达「这把令牌比所在组更窄」：purpose=generic 时必须为空数组，
+	// ModelLimits 只表达「这把令牌比所在组更窄」：generic 的 Runtime 为空，普通 call 恰好一个模型，
 	// 三种独立音频用途必须恰好一个模型（保持单模型同步账务边界）。
 	// NewAPI 侧落库时按逗号拼进 tokens.model_limits（同一个列表的物理表示，不是改名）。
 	ModelLimits []string `json:"model_limits"`
