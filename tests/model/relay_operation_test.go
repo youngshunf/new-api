@@ -91,12 +91,18 @@ func runRelayOperationPersistenceContract(t *testing.T, db *gorm.DB) {
 	_, leaseErr = model.UpsertRelayLease(spec)
 	require.NotNil(t, leaseErr, "撤销同代不可被旧PUT复活")
 	assert.Equal(t, "lease_conflict", leaseErr.Code)
-	spec.CredentialGeneration++
-	renewed, leaseErr := model.UpsertRelayLease(spec)
-	require.Nil(t, leaseErr, "同用途更高代可重新激活原Token行")
-	assert.Equal(t, rotated.Token.Id, renewed.Token.Id)
-	assert.NotEqual(t, rotated.Token.Key, renewed.Token.Key)
-	assert.False(t, renewed.Token.DeletedAt.Valid)
+	for _, generation := range []int64{1, 3, 999} {
+		spec.CredentialGeneration = generation
+		_, leaseErr = model.UpsertRelayLease(spec)
+		require.NotNil(t, leaseErr, "撤销是lease身份终态，任何代号不得复活")
+		assert.Equal(t, http.StatusConflict, leaseErr.HTTPStatus)
+		assert.Equal(t, model.RelayLeaseErrorConflict, leaseErr.Code)
+	}
+	var revoked model.Token
+	require.NoError(t, db.Unscoped().First(&revoked, rotated.Token.Id).Error)
+	assert.True(t, revoked.DeletedAt.Valid)
+	assert.Equal(t, rotated.Token.Key, revoked.Key)
+	assert.Equal(t, rotated.Token.Name, revoked.Name)
 	_, revokeErr = model.RevokeRelayLease(spec.ExternalLeaseId)
 	require.Nil(t, revokeErr)
 }

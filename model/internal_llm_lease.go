@@ -233,7 +233,8 @@ func RelayTokenPrefix(token *Token) string {
 // 幂等语义（幂等键是 external_lease_id）：
 //   - 不在册            → 新建，created=true；
 //   - 在册且同代        → 仅完整同规格且未撤销时返回同一枚Token；异规格或撤销后重投为409；
-//   - 在册且代号更大    → 换 Key（rotated=true），Token 行不变，旧明文当场作废；
+//   - 在册且未撤销、代号更大 → 换 Key（rotated=true），Token 行不变，旧明文当场作废；
+//   - 在册且已撤销      → 任何代号均为409，重新授权必须使用新的lease身份；
 //   - 在册且代号更小    → 409，这是一条过期请求，绝不把已经轮换过的凭据倒回去；
 //   - 在册但属于别的账户 → 409，lease 换账户等于换扣费主体。
 func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError) {
@@ -314,6 +315,10 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			"lease %s is already issued under another account; revoke it before re-issuing",
 			spec.ExternalLeaseId)
 	}
+	if existing.DeletedAt.Valid {
+		return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false,
+			"a revoked relay lease cannot be reissued; use a new external_lease_id")
+	}
 	if spec.CredentialGeneration < existingGeneration {
 		return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorStaleGeneration, false,
 			"lease %s is already at credential_generation %d",
@@ -336,7 +341,6 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	updated := *existing
 	updated.Name = RelayLeaseTokenName(spec.ExternalLeaseId, spec.CredentialGeneration)
 	updated.Status = common.TokenStatusEnabled
-	updated.DeletedAt = gorm.DeletedAt{}
 	updated.ExpiredTime = spec.ExpiredTime
 	updated.UnlimitedQuota = true
 	updated.ModelLimitsEnabled = len(spec.ModelLimits) > 0
@@ -366,8 +370,9 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 		"id": existing.Id, "name": existing.Name, "key": existing.Key, "operation": existing.Operation,
 		"purpose": existing.Purpose, "accounting_mode": existing.AccountingMode, "model_group": existing.ModelGroup,
 		"model_limits": existing.ModelLimits, "expired_time": existing.ExpiredTime, "deleted_at": existing.DeletedAt,
+		"status": existing.Status, "model_limits_enabled": existing.ModelLimitsEnabled,
 	}).Updates(map[string]any{
-		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime, "deleted_at": nil,
+		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime,
 		"unlimited_quota": updated.UnlimitedQuota, "model_limits_enabled": updated.ModelLimitsEnabled,
 		"model_limits": updated.ModelLimits, "purpose": updated.Purpose, "accounting_mode": updated.AccountingMode,
 		"external_lease_id": spec.ExternalLeaseId, "model_group": updated.ModelGroup,
@@ -391,7 +396,7 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 
 // RevokeRelayLease 幂等撤销一条 Relay lease。
 //
-// 软删除保留代号和用途墓碑；重复撤销返回(nil,nil)，旧同代PUT不得复活凭据。
+// 软删除保留代号和用途墓碑；重复撤销返回(nil,nil)，任何代号的PUT都不得复活凭据。
 func RevokeRelayLease(externalLeaseId string) (*Token, *RelayLeaseError) {
 	relayLeaseUpsertLock.Lock()
 	defer relayLeaseUpsertLock.Unlock()
