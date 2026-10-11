@@ -191,6 +191,10 @@ func DecodeVoicePreview(result *VoiceEnrollmentResult) ([]byte, error) {
 	if err != nil || len(data) > service.MaximumVoicePreviewBytes || len(data) < 44 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
 		return nil, fmt.Errorf("invalid voice preview audio")
 	}
+	data, err = normalizeAliWAV(data)
+	if err != nil {
+		return nil, err
+	}
 	decoder := wav.NewDecoder(bytes.NewReader(data))
 	if !decoder.IsValidFile() || decoder.SampleRate != 24000 {
 		return nil, errors.New("invalid voice preview WAV")
