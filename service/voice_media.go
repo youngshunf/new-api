@@ -55,6 +55,9 @@ func NewVoiceMediaStore(root string) (*VoiceMediaStore, error) {
 	if err = os.Chmod(root, 0700); err != nil {
 		return nil, err
 	}
+	if err = syncVoiceMediaDirectory(filepath.Dir(root)); err != nil {
+		return nil, err
+	}
 	store := &VoiceMediaStore{root: root}
 	if err = store.Cleanup(time.Now()); err != nil {
 		return nil, err
@@ -114,6 +117,9 @@ func (s *VoiceMediaStore) save(name, kind string, source io.Reader, limit int64,
 	if err = os.Mkdir(dir, 0700); err != nil {
 		return err
 	}
+	if err = syncVoiceMediaDirectory(s.root); err != nil {
+		return err
+	}
 	complete := false
 	defer func() {
 		if !complete {
@@ -140,6 +146,9 @@ func (s *VoiceMediaStore) save(name, kind string, source io.Reader, limit int64,
 	if err = os.Rename(filepath.Join(dir, "payload.pending"), filepath.Join(dir, "payload")); err != nil {
 		return err
 	}
+	if err = syncVoiceMediaDirectory(dir); err != nil {
+		return err
+	}
 	metadata.Ready, metadata.ByteSize = true, length
 	if err = writeVoiceMediaMetadata(dir, metadata); err != nil {
 		return err
@@ -153,10 +162,27 @@ func writeVoiceMediaMetadata(dir string, metadata voiceMediaMetadata) error {
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(dir, "metadata.pending"), data, 0600); err != nil {
+	file, err := os.OpenFile(filepath.Join(dir, "metadata.pending"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(filepath.Join(dir, "metadata.pending"), filepath.Join(dir, "metadata.json"))
+	_, writeErr := file.Write(data)
+	if err = errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	if err = os.Rename(filepath.Join(dir, "metadata.pending"), filepath.Join(dir, "metadata.json")); err != nil {
+		return err
+	}
+	return syncVoiceMediaDirectory(dir)
+}
+
+// 文件Sync负责内容，目录Sync负责创建、改名与删除的持久可见性；失败显式拒绝受理。
+func syncVoiceMediaDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
 }
 
 func validVoiceMediaName(name string) bool {
@@ -213,12 +239,18 @@ func (s *VoiceMediaStore) cleanup(now time.Time) error {
 			if err = os.Remove(dir); err != nil {
 				return err
 			}
+			if err = syncVoiceMediaDirectory(s.root); err != nil {
+				return err
+			}
 			continue
 		}
 		metadata, metaErr := readVoiceMediaMetadata(dir)
 		_, consumedErr := os.Lstat(filepath.Join(dir, "consumed"))
 		if metaErr != nil || metadata.ExpiresTime <= now.UnixMilli() || consumedErr == nil {
 			if err = os.RemoveAll(dir); err != nil {
+				return err
+			}
+			if err = syncVoiceMediaDirectory(s.root); err != nil {
 				return err
 			}
 		}
@@ -228,11 +260,12 @@ func (s *VoiceMediaStore) cleanup(now time.Time) error {
 
 type voiceMaterialReader struct {
 	*os.File
-	dir string
+	dir  string
+	root string
 }
 
 func (r *voiceMaterialReader) Close() error {
-	return errors.Join(r.File.Close(), os.RemoveAll(r.dir))
+	return errors.Join(r.File.Close(), os.RemoveAll(r.dir), syncVoiceMediaDirectory(r.root))
 }
 
 func (s *VoiceMediaStore) OpenMaterial(token string) (io.ReadCloser, error) {
@@ -251,12 +284,15 @@ func (s *VoiceMediaStore) OpenMaterial(token string) (io.ReadCloser, error) {
 	if err = os.Rename(filepath.Join(dir, "payload"), filepath.Join(dir, "consumed")); err != nil {
 		return nil, os.ErrNotExist
 	}
+	if err = syncVoiceMediaDirectory(dir); err != nil {
+		return nil, err
+	}
 	file, err := os.Open(filepath.Join(dir, "consumed"))
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	return &voiceMaterialReader{File: file, dir: dir}, nil
+	return &voiceMaterialReader{File: file, dir: dir, root: s.root}, nil
 }
 
 func (s *VoiceMediaStore) RemoveMaterial(token string) error {
@@ -266,7 +302,7 @@ func (s *VoiceMediaStore) RemoveMaterial(token string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.RemoveAll(filepath.Join(s.root, fmt.Sprintf("material-%x", sha256.Sum256([]byte(token)))))
+	return errors.Join(os.RemoveAll(filepath.Join(s.root, fmt.Sprintf("material-%x", sha256.Sum256([]byte(token))))), syncVoiceMediaDirectory(s.root))
 }
 
 func (s *VoiceMediaStore) openable(dir, kind string) (voiceMediaMetadata, error) {
@@ -313,5 +349,5 @@ func (s *VoiceMediaStore) RemovePreview(voiceRef string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.RemoveAll(filepath.Join(s.root, "preview-"+voiceRef))
+	return errors.Join(os.RemoveAll(filepath.Join(s.root, "preview-"+voiceRef)), syncVoiceMediaDirectory(s.root))
 }
