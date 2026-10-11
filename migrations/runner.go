@@ -121,6 +121,9 @@ func apply(db *gorm.DB) error {
 			if strings.HasPrefix(statement, "CREATE UNIQUE INDEX idx_audio_settlement_lookup") && db.Migrator().HasIndex("audio_request_settlements", "idx_audio_settlement_lookup") {
 				continue
 			}
+			if strings.HasPrefix(statement, "CREATE UNIQUE INDEX idx_voice_creation_key") && db.Migrator().HasIndex("voice_profiles", "idx_voice_creation_key") {
+				continue
+			}
 			if err := db.Exec(statement).Error; err != nil {
 				return fmt.Errorf("迁移%s执行失败：%w", name, err)
 			}
@@ -167,10 +170,15 @@ func Verify(db *gorm.DB) error {
 
 // verifyTargetSchema 核全部正式迁移完成后的目标 schema。
 //
-// 逐文件之后只核 V001 的音频底座；令牌模型组列由 V002 建立，只能在全部文件完成后核，
-// 否则全新库刚跑完 V001 就会因为「缺 V002 的列」被判失败。
+// 逐文件之后只核 V001 的音频底座；后续迁移的目标列与资源表只能在全部文件完成后核。
 func verifyTargetSchema(db *gorm.DB) error {
 	if err := verifyAudioSchema(db); err != nil {
+		return err
+	}
+	if err := verifyDeclaredTable(db, "V003__远端音色资源.sql", "voice_profiles"); err != nil {
+		return err
+	}
+	if err := verifyUniqueIndex(db, "voice_profiles", "idx_voice_creation_key", []string{"user_id", "idempotency_key_digest"}); err != nil {
 		return err
 	}
 	columns, err := db.Migrator().ColumnTypes("tokens")
@@ -253,47 +261,68 @@ func verifyAudioSchema(db *gorm.DB) error {
 			}
 			continue
 		}
-		source, _, err := migrationSource(db, "V001__音频同步账务底座.sql")
-		if err != nil {
+		if err := verifyDeclaredTable(db, "V001__音频同步账务底座.sql", table); err != nil {
 			return err
-		}
-		body := source[strings.Index(source, "CREATE TABLE IF NOT EXISTS audio_request_settlements (")+len("CREATE TABLE IF NOT EXISTS audio_request_settlements ("):]
-		body = body[:strings.Index(body, "\n)")]
-		expected := 0
-		for _, line := range strings.Split(body, "\n") {
-			fields := strings.Fields(strings.TrimSpace(line))
-			if len(fields) < 2 || strings.HasPrefix(fields[0], "UNIQUE") {
-				continue
-			}
-			expected++
-			column, ok := actual[fields[0]]
-			if !ok {
-				return fmt.Errorf("缺少目标列：%s.%s", table, fields[0])
-			}
-			wantNullable := !strings.Contains(line, "NOT NULL")
-			if nullable, known := column.Nullable(); known && nullable != wantNullable {
-				return fmt.Errorf("目标列可空性错误：%s.%s", table, fields[0])
-			}
-			actualType := strings.ToLower(column.DatabaseTypeName())
-			wantedType := strings.ToLower(strings.Split(fields[1], "(")[0])
-			if db.Dialector.Name() == "postgres" && wantedType == "bigint" {
-				wantedType = "int8"
-			}
-			if actualType != wantedType {
-				return fmt.Errorf("目标列类型错误：%s.%s expected=%s actual=%s", table, fields[0], wantedType, actualType)
-			}
-			if wantedType == "varchar" || wantedType == "char" {
-				if length, known := column.Length(); known && fmt.Sprintf("%s(%d)", wantedType, length) != fields[1] {
-					return fmt.Errorf("目标列长度错误：%s.%s", table, fields[0])
-				}
-			}
-		}
-		if len(actual) != expected {
-			return fmt.Errorf("目标列集合错误：%s expected=%d actual=%d", table, expected, len(actual))
 		}
 		if err := verifyUniqueIndex(db, table, "idx_audio_settlement_lookup", []string{"external_lease_id", "gateway_request_id"}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// verifyDeclaredTable 从正式SQL核实际列形状，供各资源表共用同一验证逻辑。
+func verifyDeclaredTable(db *gorm.DB, migration, table string) error {
+	columns, err := db.Table(table).Migrator().ColumnTypes(table)
+	if err != nil {
+		return err
+	}
+	actual := make(map[string]gorm.ColumnType)
+	for _, column := range columns {
+		actual[column.Name()] = column
+	}
+	source, _, err := migrationSource(db, migration)
+	if err != nil {
+		return err
+	}
+	body := source[strings.Index(source, "CREATE TABLE IF NOT EXISTS "+table+" (")+len("CREATE TABLE IF NOT EXISTS "+table+" ("):]
+	body = body[:strings.Index(body, "\n)")]
+	expected := 0
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "UNIQUE") {
+			continue
+		}
+		expected++
+		column, ok := actual[fields[0]]
+		if !ok {
+			return fmt.Errorf("缺少目标列：%s.%s", table, fields[0])
+		}
+		wantNullable := !strings.Contains(line, "NOT NULL")
+		if nullable, known := column.Nullable(); known && nullable != wantNullable {
+			return fmt.Errorf("目标列可空性错误：%s.%s", table, fields[0])
+		}
+		if strings.Contains(line, "PRIMARY KEY") {
+			if primary, known := column.PrimaryKey(); known && !primary {
+				return fmt.Errorf("目标主键错误：%s.%s", table, fields[0])
+			}
+		}
+		actualType := strings.ToLower(column.DatabaseTypeName())
+		wantedType := strings.ToLower(strings.Split(fields[1], "(")[0])
+		if db.Dialector.Name() == "postgres" && wantedType == "bigint" {
+			wantedType = "int8"
+		}
+		if actualType != wantedType {
+			return fmt.Errorf("目标列类型错误：%s.%s expected=%s actual=%s", table, fields[0], wantedType, actualType)
+		}
+		if wantedType == "varchar" || wantedType == "char" {
+			if length, known := column.Length(); known && fmt.Sprintf("%s(%d)", wantedType, length) != fields[1] {
+				return fmt.Errorf("目标列长度错误：%s.%s", table, fields[0])
+			}
+		}
+	}
+	if len(actual) != expected {
+		return fmt.Errorf("目标列集合错误：%s expected=%d actual=%d", table, expected, len(actual))
 	}
 	return nil
 }
