@@ -2,7 +2,8 @@ package ali
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,7 +129,7 @@ func ConvertAudioRequestForAli(c *gin.Context, info *relaycommon.RelayInfo, req 
 			},
 		}
 	}
-	jsonData, err := json.Marshal(aliReq)
+	jsonData, err := common.Marshal(aliReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Ali TTS request: %w", err)
 	}
@@ -146,12 +147,15 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	defer service.CloseResponseBodyGracefully(resp)
 
 	// Read the JSON response
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
 	if err != nil {
 		return types.NewError(
 			fmt.Errorf("failed to read Ali TTS response: %w", err),
 			types.ErrorCodeReadResponseBodyFailed,
 		), nil
+	}
+	if len(body) > 1024*1024 {
+		return types.NewError(errors.New("Ali TTS response exceeds size limit"), types.ErrorCodeReadResponseBodyFailed), nil
 	}
 
 	var aliResp AliTTSResponse
@@ -187,14 +191,16 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	providerRequestID := aliProviderRequestID(c, aliResp.RequestID)
 	logger.LogInfo(c, fmt.Sprintf("Ali TTS: downloading audio, provider request id: %s", providerRequestID))
 
-	downloadRequest, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, audioURL, nil)
+	downloadContext, cancelDownload := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancelDownload()
+	downloadRequest, err := http.NewRequestWithContext(downloadContext, http.MethodGet, audioURL, nil)
 	if err != nil {
 		return types.NewError(
 			fmt.Errorf("failed to create TTS audio download request: %w", err),
 			types.ErrorCodeDoRequestFailed,
 		), nil
 	}
-	httpClient := &http.Client{Timeout: 2 * time.Minute}
+	httpClient := service.GetSSRFProtectedHTTPClient()
 	audioResp, err := httpClient.Do(downloadRequest)
 	if err != nil {
 		return types.NewError(

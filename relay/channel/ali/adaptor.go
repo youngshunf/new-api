@@ -144,7 +144,7 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func isAliQwenAudioTTSModel(modelName string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.HasPrefix(normalized, "qwen-audio-3.0-tts-")
+	return strings.HasPrefix(normalized, "qwen-audio-3.0-tts-") || SupportsVoiceEnrollment(normalized)
 }
 
 func aliProviderRequestID(c *gin.Context, responseRequestID string) string {

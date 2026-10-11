@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -11,6 +12,8 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -106,6 +109,13 @@ func TestAliTTSSuccessDownloadsAudioAndReturnsProviderUsage(t *testing.T) {
 		require.NoError(t, err)
 	}))
 	t.Cleanup(audioServer.Close)
+	parsed, parseErr := url.Parse(audioServer.URL)
+	require.NoError(t, parseErr)
+	fetch := system_setting.GetFetchSetting()
+	previousFetch := *fetch
+	fetch.AllowPrivateIp, fetch.AllowedPorts = true, []string{parsed.Port()}
+	service.InitHttpClient()
+	t.Cleanup(func() { *fetch = previousFetch; service.InitHttpClient() })
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
