@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -234,6 +235,14 @@ func AliTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 
 	contentType := audioResp.Header.Get("Content-Type")
 	if contentType == "" {
+		contentType = "audio/wav"
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if mediaType == "audio/wav" || mediaType == "audio/x-wav" || mediaType == "audio/vnd.wave" || bytes.HasPrefix(audio, []byte("RIFF")) {
+		audio, err = normalizeAliWAV(audio)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeBadResponseBody), nil
+		}
 		contentType = "audio/wav"
 	}
 

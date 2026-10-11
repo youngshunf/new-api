@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -102,10 +103,12 @@ func TestAliTTSErrorIncludesProviderRequestID(t *testing.T) {
 }
 
 func TestAliTTSSuccessDownloadsAudioAndReturnsProviderUsage(t *testing.T) {
+	audio, err := os.ReadFile("../../../tests/fixtures/voice-preview.wav")
+	require.NoError(t, err)
 	audioServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		assert.Equal(t, http.MethodGet, request.Method)
 		response.Header().Set("Content-Type", "audio/wav")
-		_, err := response.Write([]byte("audio-bytes"))
+		_, err := response.Write(audio)
 		require.NoError(t, err)
 	}))
 	t.Cleanup(audioServer.Close)
@@ -139,7 +142,7 @@ func TestAliTTSSuccessDownloadsAudioAndReturnsProviderUsage(t *testing.T) {
 	assert.Equal(t, 10, usage.TotalTokens)
 	assert.Equal(t, "provider-tts-2", c.GetString(common.UpstreamRequestIdKey))
 	assert.Equal(t, "audio/wav", recorder.Header().Get("Content-Type"))
-	assert.Equal(t, "audio-bytes", recorder.Body.String())
+	assert.Equal(t, audio, recorder.Body.Bytes())
 }
 
 func TestAliSTTErrorIncludesProviderRequestID(t *testing.T) {
