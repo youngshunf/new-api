@@ -495,6 +495,9 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, err.Error())
 		return err
 	}
+	if err := authorizeTokenOperation(c, token); err != nil {
+		return err
+	}
 	c.Set("id", token.UserId)
 	c.Set("token_id", token.Id)
 	c.Set("token_key", token.Key)

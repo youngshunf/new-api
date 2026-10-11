@@ -311,6 +311,7 @@ func leaseRequestBody(t *testing.T, accountId int, generation int64, modelGroup 
 		ModelGroup:           modelGroup,
 		ModelLimits:          []string{},
 		ExpiresTime:          expiresTime.UTC().Format(time.RFC3339),
+		Purpose:              "generic", AccountingMode: "legacy",
 	})
 	require.NoError(t, err)
 	return string(payload)
@@ -390,28 +391,27 @@ func TestPutRelayLeaseReplayReturnsTheSameToken(t *testing.T) {
 	assert.Equal(t, int64(1), countLeaseTokens(t, db), "同一个幂等键必须只对应一枚 Token")
 }
 
-// 同键、不同 body：模型组与期限被就地更新，Token 本身不变——PUT 是 upsert，不是「只创建一次」。
-func TestPutRelayLeaseSameKeyDifferentBodyUpdatesInPlace(t *testing.T) {
+// 同代仅完整同规格幂等；组与期限变化必须升代，不能改变现有Key对应的权限。
+func TestPutRelayLeaseSameGenerationDifferentSpecConflicts(t *testing.T) {
 	db := setupRelayLeaseTestDB(t)
 	engine := newRelayLeaseEngine()
 	firstExpires := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	secondExpires := time.Now().Add(48 * time.Hour).Truncate(time.Second)
-
 	first := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
 		leaseRequestBody(t, leaseTestAccountId, 1, "default", firstExpires)))
-	second := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
-		leaseRequestBody(t, leaseTestAccountId, 1, "pro", secondExpires)))
-
-	assert.Equal(t, first.NewApiTokenId, second.NewApiTokenId)
-	assert.Equal(t, first.RelayToken, second.RelayToken, "同代重投不换 Key")
-	assert.False(t, second.Created)
-	assert.False(t, second.Rotated)
-	assert.Equal(t, "pro", second.ModelGroup)
-
-	stored, err := model.GetTokenById(second.NewApiTokenId)
+	conflict := callRelayLease(t, engine, http.MethodPut, leaseTestId,
+		leaseRequestBody(t, leaseTestAccountId, 1, "pro", secondExpires))
+	require.Equal(t, http.StatusConflict, conflict.Code)
+	assert.Equal(t, "lease_conflict", decodeInternalError(t, conflict).Code)
+	stored, err := model.GetTokenById(first.NewApiTokenId)
 	require.NoError(t, err)
-	assert.Equal(t, "pro", stored.ModelGroup, "改组就地生效，不换 Key")
-	assert.Equal(t, secondExpires.Unix(), stored.ExpiredTime)
+	assert.Equal(t, "default", stored.ModelGroup)
+	assert.Equal(t, firstExpires.Unix(), stored.ExpiredTime)
+	rotated := decodeLeaseView(t, callRelayLease(t, engine, http.MethodPut, leaseTestId,
+		leaseRequestBody(t, leaseTestAccountId, 2, "pro", secondExpires)))
+	assert.Equal(t, first.NewApiTokenId, rotated.NewApiTokenId)
+	assert.NotEqual(t, first.RelayToken, rotated.RelayToken)
+	assert.Equal(t, "pro", rotated.ModelGroup)
 	assert.Equal(t, int64(1), countLeaseTokens(t, db))
 }
 
@@ -519,6 +519,7 @@ func TestPutRelayLeaseRejectsInvalidRequests(t *testing.T) {
 		{"generic lease with two models", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o","tts-1"],"expires_time":"` + future + `"}`},
 		{"audio lease without model", leaseTestId, `{` + audio + `,"model_limits":[]}`},
 		{"audio lease with two models", leaseTestId, `{` + audio + `,"model_limits":["tts-1","tts-1-hd"]}`},
+		{"ordinary operation on managed audio lease", leaseTestId, `{` + audio + `,"model_limits":["tts-1"],"operation":"audio.tts"}`},
 		{"model name with comma", leaseTestId, `{` + audio + `,"model_limits":["tts-1,tts-1-hd"]}`},
 		{"model name with whitespace", leaseTestId, `{` + audio + `,"model_limits":[" tts-1"]}`},
 		{"expires time in the past", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"2020-01-01T00:00:00Z"}`},

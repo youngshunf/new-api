@@ -43,7 +43,8 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 		t.Skip("三方言专项由VC7_SCHEMA_MATRIX启用")
 	}
 	previousType := common.MainDatabaseType()
-	t.Cleanup(func() { common.SetMainDatabaseType(previousType) })
+	previousDB := model.DB
+	t.Cleanup(func() { common.SetMainDatabaseType(previousType); model.DB = previousDB })
 	for _, dialect := range []string{"sqlite", "postgres", "mysql"} {
 		t.Run(dialect, func(t *testing.T) {
 			var connection gorm.Dialector
@@ -78,21 +79,28 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 			}
 			require.NoError(t, db.Raw(query).Scan(&version).Error)
 			t.Logf("真实%s版本：%s", dialect, version)
-			for _, stage := range []string{"fresh", "upgrade"} {
+			for _, stage := range []string{"fresh", "upgrade", "upgrade_v003"} {
 				t.Run(stage, func(t *testing.T) {
 					require.NoError(t, db.Migrator().DropTable("voice_profiles", "audio_request_settlements", "schema_migrations", "tokens"))
 					require.NoError(t, db.AutoMigrate(&model.Token{}))
-					if stage == "upgrade" {
+					if stage != "fresh" {
 						applyVC7PreviousRelease(t, db, dialect)
+						if stage == "upgrade_v003" {
+							applyVC7PreviousMigration(t, db, dialect, "V003__远端音色资源.sql")
+						}
 						require.NoError(t, db.Table("tokens").Create(map[string]any{"id": 77001, "user_id": 77002, "key": "vc7-existing-token", "model_group": "default", "remain_quota": 73}).Error)
 					}
 					require.NoError(t, migrations.Apply(db))
 					require.NoError(t, migrations.Apply(db))
 					require.NoError(t, migrations.Verify(db))
-					if stage == "upgrade" {
+					runRelayOperationPersistenceContract(t, db)
+					if stage != "fresh" {
 						var remaining int
 						require.NoError(t, db.Table("tokens").Where("id = ?", 77001).Pluck("remain_quota", &remaining).Error)
 						assert.Equal(t, 73, remaining)
+						var operation string
+						require.NoError(t, db.Table("tokens").Where("id = ?", 77001).Pluck("operation", &operation).Error)
+						assert.Empty(t, operation, "旧Runtime升级后仍省略用途")
 					}
 					stamp := model.DatabaseTime{Time: time.Date(2026, 10, 11, 1, 2, 3, 456000000, time.UTC)}
 					row := map[string]any{"voice_ref": "01998dd2-0000-7000-8000-000000007701", "created_time": stamp, "updated_time": stamp, "revision": 1,
@@ -126,19 +134,24 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 func applyVC7PreviousRelease(t *testing.T, db *gorm.DB, dialect string) {
 	t.Helper()
 	for _, name := range []string{"V001__音频同步账务底座.sql", "V002__令牌模型组.sql"} {
-		data, err := os.ReadFile(filepath.Join("..", "..", "migrations", dialect, name))
-		require.NoError(t, err)
-		var lines []string
-		for _, line := range strings.Split(string(data), "\n") {
-			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
-				lines = append(lines, line)
-			}
-		}
-		for _, statement := range strings.Split(strings.Join(lines, "\n"), ";") {
-			if strings.TrimSpace(statement) != "" {
-				require.NoError(t, db.Exec(statement).Error)
-			}
-		}
-		require.NoError(t, db.Table("schema_migrations").Create(map[string]any{"migration_id": name, "checksum": fmt.Sprintf("%x", sha256.Sum256(data)), "created_time": model.DatabaseTime{Time: time.Now().UTC()}}).Error)
+		applyVC7PreviousMigration(t, db, dialect, name)
 	}
+}
+
+func applyVC7PreviousMigration(t *testing.T, db *gorm.DB, dialect, name string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "migrations", dialect, name))
+	require.NoError(t, err)
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			lines = append(lines, line)
+		}
+	}
+	for _, statement := range strings.Split(strings.Join(lines, "\n"), ";") {
+		if strings.TrimSpace(statement) != "" {
+			require.NoError(t, db.Exec(statement).Error)
+		}
+	}
+	require.NoError(t, db.Table("schema_migrations").Create(map[string]any{"migration_id": name, "checksum": fmt.Sprintf("%x", sha256.Sum256(data)), "created_time": model.DatabaseTime{Time: time.Now().UTC()}}).Error)
 }

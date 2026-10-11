@@ -185,26 +185,33 @@ func verifyTargetSchema(db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
+	found := map[string]bool{}
 	for _, column := range columns {
-		if column.Name() != "model_group" {
+		name := column.Name()
+		if name != "model_group" && name != "operation" {
 			continue
 		}
 		if nullable, known := column.Nullable(); known && nullable {
-			return fmt.Errorf("目标列可空性错误：tokens.model_group")
+			return fmt.Errorf("目标列可空性错误：tokens.%s", name)
 		}
 		wantType := "varchar"
 		if db.Dialector.Name() == "sqlite" {
 			wantType = "text"
 		}
 		if strings.ToLower(column.DatabaseTypeName()) != wantType {
-			return fmt.Errorf("目标令牌列类型错误：tokens.model_group")
+			return fmt.Errorf("目标令牌列类型错误：tokens.%s", name)
 		}
 		if length, known := column.Length(); wantType == "varchar" && known && length != 32 {
-			return fmt.Errorf("目标令牌列长度错误：tokens.model_group")
+			return fmt.Errorf("目标令牌列长度错误：tokens.%s", name)
 		}
-		return nil
+		found[name] = true
 	}
-	return fmt.Errorf("缺少目标列：tokens.model_group")
+	for _, name := range []string{"model_group", "operation"} {
+		if !found[name] {
+			return fmt.Errorf("缺少目标列：tokens.%s", name)
+		}
+	}
+	return nil
 }
 
 func verifyAudioSchema(db *gorm.DB) error {

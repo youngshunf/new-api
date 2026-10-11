@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
@@ -25,7 +26,9 @@ import (
 )
 
 // 真实 HTTP 签发后由原 TokenAuth 和模型列表消费，证明名单限制确实落库并与组求交。
-func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
+func setupOrdinaryCallHTTP(t *testing.T) (*gorm.DB, *gin.Engine, *httptest.Server) {
+	t.Helper()
+	require.NoError(t, i18n.Init())
 	previousDB, previousLog := model.DB, model.LOG_DB
 	previousMain, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	previousRedis, previousMemory := common.RedisEnabled, common.MemoryCacheEnabled
@@ -45,7 +48,7 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 	require.NoError(t, migrations.Apply(db))
 	require.NoError(t, model.InitDB())
 	model.LOG_DB = model.DB
-	defer func() {
+	t.Cleanup(func() {
 		connection, closeErr := model.DB.DB()
 		require.NoError(t, closeErr)
 		require.NoError(t, connection.Close())
@@ -58,7 +61,7 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 		common.IsMasterNode, common.SQLitePath = previousMaster, previousPath
 		operation_setting.SelfUseModeEnabled = previousSelfUse
 		gin.SetMode(previousGin)
-	}()
+	})
 	common.OptionMapRWMutex.Lock()
 	if common.OptionMap == nil {
 		common.OptionMap = map[string]string{}
@@ -66,7 +69,7 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 	previousGroups := common.OptionMap[model.HasnLlmModelGroupsOptionKey]
 	common.OptionMapRWMutex.Unlock()
 	require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, `{"default":{"publication_revision":1,"models":["gpt-4o","tts-1"]}}`))
-	defer func() { require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, previousGroups)) }()
+	t.Cleanup(func() { require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, previousGroups)) })
 	require.NoError(t, db.Create(&model.User{Id: 771001, Username: "vc7-call", AffCode: "vc7-call", Group: "default", Quota: 1000000, Status: common.UserStatusEnabled}).Error)
 	require.NoError(t, db.Create(&model.Channel{Id: 771001, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Group: "default", Models: "gpt-4o,tts-1,whisper-1"}).Error)
 	for _, name := range []string{"gpt-4o", "tts-1", "whisper-1"} {
@@ -76,21 +79,27 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 	engine.PUT("/api/internal/v1/llm/relay-leases/:external_lease_id", controller.PutInternalRelayLease)
 	engine.GET("/v1/models", middleware.TokenAuth(), func(c *gin.Context) { controller.ListModels(c, constant.ChannelTypeOpenAI) })
 	server := httptest.NewServer(engine)
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return db, engine, server
+}
+
+func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
+	db, _, server := setupOrdinaryCallHTTP(t)
 	for _, tc := range []struct {
-		name   string
-		limits []string
-		status int
-		models []string
+		name      string
+		limits    []string
+		operation string
+		status    int
+		models    []string
 	}{
 		{name: "runtime", limits: []string{}, status: http.StatusOK, models: []string{"gpt-4o", "tts-1"}},
-		{name: "single-call", limits: []string{"tts-1"}, status: http.StatusOK, models: []string{"tts-1"}},
-		{name: "multiple-models", limits: []string{"gpt-4o", "tts-1"}, status: http.StatusBadRequest},
-		{name: "outside-group", limits: []string{"whisper-1"}, status: http.StatusOK, models: []string{}},
+		{name: "single-call", limits: []string{"tts-1"}, operation: "audio.tts", status: http.StatusOK, models: []string{"tts-1"}},
+		{name: "multiple-models", limits: []string{"gpt-4o", "tts-1"}, operation: "audio.tts", status: http.StatusBadRequest},
+		{name: "outside-group", limits: []string{"whisper-1"}, operation: "audio.transcribe", status: http.StatusOK, models: []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload, marshalErr := common.Marshal(dto.LlmRelayLeaseRequest{NewApiUserId: 771001, CredentialGeneration: 1,
-				ModelGroup: "default", ModelLimits: tc.limits, ExpiresTime: time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339), Purpose: "generic", AccountingMode: "legacy"})
+				ModelGroup: "default", ModelLimits: tc.limits, ExpiresTime: time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339), Purpose: "generic", AccountingMode: "legacy", Operation: tc.operation})
 			require.NoError(t, marshalErr)
 			request, requestErr := http.NewRequest(http.MethodPut, server.URL+"/api/internal/v1/llm/relay-leases/vc7."+tc.name, bytes.NewReader(payload))
 			require.NoError(t, requestErr)
@@ -109,10 +118,12 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 			}
 			var lease dto.LlmRelayLeaseView
 			require.NoError(t, common.Unmarshal(body, &lease))
+			assert.Equal(t, tc.operation, lease.Operation)
 			stored, lookupErr := model.GetTokenById(lease.NewApiTokenId)
 			require.NoError(t, lookupErr)
 			assert.Equal(t, len(tc.limits) == 1, stored.ModelLimitsEnabled)
 			assert.Equal(t, tc.limits, stored.GetModelLimits())
+			assert.Equal(t, tc.operation, stored.Operation)
 			request, requestErr = http.NewRequest(http.MethodGet, server.URL+"/v1/models", nil)
 			require.NoError(t, requestErr)
 			request.Header.Set("Authorization", "Bearer "+lease.RelayToken)

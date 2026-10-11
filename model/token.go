@@ -37,6 +37,8 @@ type Token struct {
 	// ModelGroup 是 Relay lease 所属的模型组（V002 正式迁移拥有该列）。非空时可调用集合由
 	// HasnLlmModelGroups 决定，见 LlmModelGroupModelSet；空串的令牌不受模型组约束。
 	ModelGroup string `json:"model_group" gorm:"column:model_group;->;-:migration"`
+	// Operation 只由可信租约控制面写入，V004正式迁移拥有该列。
+	Operation string `json:"operation,omitempty" gorm:"column:operation;->;-:migration"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -398,7 +400,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 }
 
 func (token *Token) Insert() error {
-	if token.Purpose != "" && token.Purpose != "generic" || token.AccountingMode != "" && token.AccountingMode != "legacy" || token.ExternalLeaseId != nil {
+	if token.Purpose != "" && token.Purpose != "generic" || token.AccountingMode != "" && token.AccountingMode != "legacy" || token.ExternalLeaseId != nil || token.Operation != "" {
 		return errors.New("受管音频令牌只能由可信租约签发入口创建")
 	}
 	token.Purpose = "generic"

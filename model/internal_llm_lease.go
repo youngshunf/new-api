@@ -16,11 +16,10 @@ import (
 
 // Relay lease 在 NewAPI 侧的持久形态（LLM 网关设计 §10）。
 //
-// # 一条 lease 就是一枚普通 Token 行，没有新表也没有新列
+// # 一条 lease 就是一枚普通 Token 行，不建立第二套凭据表
 //
-// 本切片刻意不动 schema：加表或加列必须跑 SQLite / MySQL / PostgreSQL 三库验证，
-// 而 lease 需要 NewAPI 记住的事实只有两个——幂等键与凭据代号——它们都能无歧义地编码进
-// 已有的、带索引的 name 列：
+// external_lease_id、model_group、operation及账务模式由正式SQL迁移拥有；
+// 凭据代号继续编码进已有的带索引name列：
 //
 //	name = "hasn-lease:" + external_lease_id + ":g" + credential_generation
 //
@@ -55,6 +54,7 @@ const (
 	RelayLeaseErrorAccountMismatch    = "lease_account_mismatch"
 	RelayLeaseErrorStaleGeneration    = "stale_credential_generation"
 	RelayLeaseErrorStorageUnavailable = "storage_unavailable"
+	RelayLeaseErrorConflict           = "lease_conflict"
 )
 
 // externalLeaseIdPattern 收窄 lease id 的字符集，理由见文件头注。
@@ -66,10 +66,9 @@ func stringPointer(value string) *string { return &value }
 // NormalizeRelayLeaseAccounting 校验并归一租约的用途与记账模式。
 //
 // 私有契约 llm-relay-lease-internal-v1 要求 generic 租约显式携带 purpose=generic、
-// accounting_mode=legacy；两者都省略与该显式组合等价，统一归一为 generic/legacy 落库，
-// 不把空串写进带默认值的列。受管音频租约只接受三种音频用途且必须是 synchronous。
+// accounting_mode=legacy，不接受空串默认。历史受管音频只接受三种音频用途且必须是synchronous。
 func NormalizeRelayLeaseAccounting(purpose, accountingMode string) (string, string, error) {
-	if (purpose == "" && accountingMode == "") || (purpose == "generic" && accountingMode == "legacy") {
+	if purpose == "generic" && accountingMode == "legacy" {
 		return "generic", "legacy", nil
 	}
 	if accountingMode != "synchronous" {
@@ -85,9 +84,7 @@ func NormalizeRelayLeaseAccounting(purpose, accountingMode string) (string, stri
 
 // relayLeaseUpsertLock 把同进程内的 lease 签发串行化。
 //
-// 幂等键没有数据库唯一约束（那需要加列/加索引，见文件头注），所以「查不到就插入」在并发下
-// 可能插两行。控制面 QPS 极低，一把全局锁就够；跨副本仍可能并发，因此读侧还会检出重复并告警，
-// 而不是假设它不会发生。
+// 同进程串行减少控制面争用；跨副本依赖external_lease_id唯一约束及更新旧代/旧Key/用途CAS。
 var relayLeaseUpsertLock sync.Mutex
 
 // RelayLeaseError 是 lease 操作的终局失败，携带内部通道要返回的完整语义。
@@ -156,7 +153,7 @@ func FindRelayLeaseToken(externalLeaseId string) (*Token, int64, error) {
 	}
 	var candidates []*Token
 	pattern := relayLeaseNamePrefix + externalLeaseId + relayLeaseGenerationSeparator + "%"
-	if err := DB.Where("name LIKE ?", pattern).Order("id asc").Find(&candidates).Error; err != nil {
+	if err := DB.Unscoped().Where("name LIKE ?", pattern).Order("id asc").Find(&candidates).Error; err != nil {
 		return nil, 0, err
 	}
 	var (
@@ -206,6 +203,7 @@ type RelayLeaseSpec struct {
 	// Purpose 与 AccountingMode 是可信租约控制面的受管音频资格；generic/legacy 保持旧租约。
 	Purpose        string
 	AccountingMode string
+	Operation      string
 }
 
 // RelayLeaseOutcome 是一次幂等签发的结果。
@@ -234,7 +232,7 @@ func RelayTokenPrefix(token *Token) string {
 //
 // 幂等语义（幂等键是 external_lease_id）：
 //   - 不在册            → 新建，created=true；
-//   - 在册且同代        → 返回同一枚 Token（明文不变），按本次入参刷新模型组、收窄名单与期限；
+//   - 在册且同代        → 仅完整同规格且未撤销时返回同一枚Token；异规格或撤销后重投为409；
 //   - 在册且代号更大    → 换 Key（rotated=true），Token 行不变，旧明文当场作废；
 //   - 在册且代号更小    → 409，这是一条过期请求，绝不把已经轮换过的凭据倒回去；
 //   - 在册但属于别的账户 → 409，lease 换账户等于换扣费主体。
@@ -244,6 +242,9 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", accountingErr)
 	}
 	spec.Purpose, spec.AccountingMode = purpose, accountingMode
+	if err := ValidateRelayLeaseOperation(spec.Operation, spec.Purpose, spec.ModelLimits); err != nil {
+		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", err)
+	}
 	relayLeaseUpsertLock.Lock()
 	defer relayLeaseUpsertLock.Unlock()
 
@@ -288,13 +289,14 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			AccountingMode:     spec.AccountingMode,
 			ExternalLeaseId:    stringPointer(spec.ExternalLeaseId),
 			ModelGroup:         spec.ModelGroup,
+			Operation:          spec.Operation,
 		}
 		if insertErr := DB.Table("tokens").Create(map[string]any{
 			"user_id": lease.UserId, "name": lease.Name, "key": lease.Key, "status": lease.Status,
 			"created_time": lease.CreatedTime, "accessed_time": lease.AccessedTime, "expired_time": lease.ExpiredTime,
 			"unlimited_quota": lease.UnlimitedQuota, "model_limits_enabled": lease.ModelLimitsEnabled,
 			"model_limits": lease.ModelLimits, "purpose": lease.Purpose, "accounting_mode": lease.AccountingMode,
-			"external_lease_id": spec.ExternalLeaseId, "model_group": lease.ModelGroup,
+			"external_lease_id": spec.ExternalLeaseId, "model_group": lease.ModelGroup, "operation": lease.Operation,
 		}).Error; insertErr != nil {
 			return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 				"failed to persist the lease")
@@ -317,11 +319,24 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			"lease %s is already at credential_generation %d",
 			spec.ExternalLeaseId, existingGeneration)
 	}
+	if existing.Operation != spec.Operation || existing.Purpose != spec.Purpose || existing.AccountingMode != spec.AccountingMode {
+		return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false,
+			"the purpose, accounting mode and operation of an existing relay lease cannot change")
+	}
+
+	if spec.CredentialGeneration == existingGeneration {
+		if existing.DeletedAt.Valid || existing.Status != common.TokenStatusEnabled || existing.ModelGroup != spec.ModelGroup ||
+			existing.ModelLimits != modelLimits || existing.ModelLimitsEnabled != (len(spec.ModelLimits) > 0) || existing.ExpiredTime != spec.ExpiredTime {
+			return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false, "same-generation relay lease must match the active complete specification")
+		}
+		return &RelayLeaseOutcome{Token: existing, Generation: existingGeneration}, nil
+	}
 
 	rotated := spec.CredentialGeneration > existingGeneration
 	updated := *existing
 	updated.Name = RelayLeaseTokenName(spec.ExternalLeaseId, spec.CredentialGeneration)
 	updated.Status = common.TokenStatusEnabled
+	updated.DeletedAt = gorm.DeletedAt{}
 	updated.ExpiredTime = spec.ExpiredTime
 	updated.UnlimitedQuota = true
 	updated.ModelLimitsEnabled = len(spec.ModelLimits) > 0
@@ -347,21 +362,36 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	}
 	// 走 Table 而不是 Model(&Token{})：purpose/accounting_mode/external_lease_id/model_group 在结构体上
 	// 是只读映射（正式迁移拥有这些列），经 Model 的 map Updates 会被 GORM 静默丢弃。
-	if updateErr := DB.Table("tokens").Where("id = ?", existing.Id).Updates(map[string]any{
-		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime,
+	result := DB.Unscoped().Table("tokens").Where(map[string]any{
+		"id": existing.Id, "name": existing.Name, "key": existing.Key, "operation": existing.Operation,
+		"purpose": existing.Purpose, "accounting_mode": existing.AccountingMode, "model_group": existing.ModelGroup,
+		"model_limits": existing.ModelLimits, "expired_time": existing.ExpiredTime, "deleted_at": existing.DeletedAt,
+	}).Updates(map[string]any{
+		"name": updated.Name, "key": updated.Key, "status": updated.Status, "expired_time": updated.ExpiredTime, "deleted_at": nil,
 		"unlimited_quota": updated.UnlimitedQuota, "model_limits_enabled": updated.ModelLimitsEnabled,
 		"model_limits": updated.ModelLimits, "purpose": updated.Purpose, "accounting_mode": updated.AccountingMode,
 		"external_lease_id": spec.ExternalLeaseId, "model_group": updated.ModelGroup,
-	}).Error; updateErr != nil {
+	})
+	if updateErr := result.Error; updateErr != nil {
 		return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 			"failed to update the lease")
+	}
+	if result.RowsAffected == 0 {
+		// MySQL无变化重投会报0行；现读必须仍与完整目标规格一致，才能作为幂等成功。
+		var current Token
+		if err := DB.Unscoped().First(&current, existing.Id).Error; err != nil || current.Name != updated.Name || current.Key != updated.Key ||
+			current.Operation != updated.Operation || current.Purpose != updated.Purpose || current.AccountingMode != updated.AccountingMode ||
+			current.ModelGroup != updated.ModelGroup || current.ModelLimits != updated.ModelLimits || current.ModelLimitsEnabled != updated.ModelLimitsEnabled ||
+			current.ExpiredTime != updated.ExpiredTime || current.UserId != updated.UserId || current.Status != updated.Status || current.DeletedAt.Valid {
+			return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false, "relay lease changed during update")
+		}
 	}
 	return &RelayLeaseOutcome{Token: &updated, Generation: spec.CredentialGeneration, Rotated: rotated}, nil
 }
 
 // RevokeRelayLease 幂等撤销一条 Relay lease。
 //
-// 已经不在册时返回 (nil, nil)：调用之后它一定不在册，这就是幂等撤销的全部要求。
+// 软删除保留代号和用途墓碑；重复撤销返回(nil,nil)，旧同代PUT不得复活凭据。
 func RevokeRelayLease(externalLeaseId string) (*Token, *RelayLeaseError) {
 	relayLeaseUpsertLock.Lock()
 	defer relayLeaseUpsertLock.Unlock()
@@ -371,7 +401,7 @@ func RevokeRelayLease(externalLeaseId string) (*Token, *RelayLeaseError) {
 		return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 			"failed to look up the lease")
 	}
-	if existing == nil {
+	if existing == nil || existing.DeletedAt.Valid {
 		return nil, nil
 	}
 	if deleteErr := existing.Delete(); deleteErr != nil && !errors.Is(deleteErr, gorm.ErrRecordNotFound) {

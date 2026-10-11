@@ -45,6 +45,7 @@ var relayLeaseRequestAllowedFields = map[string]struct{}{
 	"expires_time":          {},
 	"purpose":               {},
 	"accounting_mode":       {},
+	"operation":             {},
 }
 
 // modelGroupRequestAllowedFields 是 LlmModelGroupRequest 的字段闭集，两项都必填。
@@ -219,6 +220,7 @@ func PutInternalRelayLease(c *gin.Context) {
 		ExpiresTime:          time.Unix(outcome.Token.ExpiredTime, 0).UTC().Format(time.RFC3339),
 		Purpose:              outcome.Token.Purpose,
 		AccountingMode:       outcome.Token.AccountingMode,
+		Operation:            outcome.Token.Operation,
 		TokenPrefix:          model.RelayTokenPrefix(outcome.Token),
 		RelayToken:           model.RelayTokenPlaintext(outcome.Token),
 		Created:              outcome.Created,
@@ -283,14 +285,17 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		sort.Strings(unknown)
 		return nil, invalid("unknown field(s): %s", strings.Join(unknown, ", "))
 	}
-	for _, required := range []string{"model_group", "model_limits"} {
+	for _, required := range []string{"newapi_user_id", "credential_generation", "model_group", "model_limits", "expires_time", "purpose", "accounting_mode"} {
 		if value, present := probe[required]; !present || value == nil {
 			return nil, invalid("%s is required", required)
 		}
 	}
 	var request dto.LlmRelayLeaseRequest
-	if err := common.Unmarshal(body, &request); err != nil {
+	if err := common.UnmarshalStrictObject(body, &request); err != nil {
 		return nil, invalid("request body does not match the relay lease schema")
+	}
+	if value, present := probe["operation"]; present && (value == nil || request.Operation == "") {
+		return nil, invalid("operation must be omitted for Runtime or contain a non-empty operation for a call")
 	}
 
 	if request.NewApiUserId <= 0 {
@@ -306,7 +311,7 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if limitsErr != nil {
 		return nil, invalid("model_limits: %s", limitsErr.Error())
 	}
-	expiresTime, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(request.ExpiresTime))
+	expiresTime, parseErr := time.Parse(time.RFC3339, request.ExpiresTime)
 	if parseErr != nil {
 		return nil, invalid("expires_time must be an RFC3339 timestamp")
 	}
@@ -315,18 +320,15 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if !expiresTime.After(time.Now()) {
 		return nil, invalid("expires_time must be in the future")
 	}
-	purpose, accountingMode, accountingErr := model.NormalizeRelayLeaseAccounting(
-		strings.TrimSpace(request.Purpose), strings.TrimSpace(request.AccountingMode))
+	if request.Purpose == "" || request.AccountingMode == "" {
+		return nil, invalid("purpose and accounting_mode must be explicit non-empty values")
+	}
+	purpose, accountingMode, accountingErr := model.NormalizeRelayLeaseAccounting(request.Purpose, request.AccountingMode)
 	if accountingErr != nil {
 		return nil, invalid("%s", accountingErr.Error())
 	}
-	// generic 的 Runtime 租约使用空名单，普通 call 租约用单模型名单与模型组求交。
-	// 独立音频仍必须钉死单个模型，保持现有同步账务边界。
-	if purpose == "generic" && len(modelLimits) > 1 {
-		return nil, invalid("model_limits must contain at most one model for a generic lease")
-	}
-	if purpose != "generic" && len(modelLimits) != 1 {
-		return nil, invalid("model_limits must contain exactly one model for a managed audio lease")
+	if err := model.ValidateRelayLeaseOperation(request.Operation, purpose, modelLimits); err != nil {
+		return nil, invalid("%s", err)
 	}
 
 	return &model.RelayLeaseSpec{
@@ -338,6 +340,7 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		ExpiredTime:          expiresTime.Unix(),
 		Purpose:              purpose,
 		AccountingMode:       accountingMode,
+		Operation:            request.Operation,
 	}, nil
 }
 

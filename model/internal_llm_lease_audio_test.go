@@ -43,15 +43,15 @@ func TestUpsertRelayLeasePersistsManagedAudioIdentity(t *testing.T) {
 }
 
 func TestNormalizeRelayLeaseAccountingGenericForms(t *testing.T) {
-	// 省略与显式 generic/legacy 等价，统一归一为 generic/legacy
-	for _, form := range [][2]string{{"", ""}, {"generic", "legacy"}} {
+	// 通用租约只能显式声明generic/legacy
+	for _, form := range [][2]string{{"generic", "legacy"}} {
 		purpose, mode, err := NormalizeRelayLeaseAccounting(form[0], form[1])
 		require.NoError(t, err)
 		require.Equal(t, "generic", purpose)
 		require.Equal(t, "legacy", mode)
 	}
 	// 半显式、generic 配 synchronous、音频配 legacy 一律拒绝
-	for _, form := range [][2]string{{"generic", ""}, {"", "legacy"}, {"generic", "synchronous"}, {"audio.tts", "legacy"}, {"audio.unknown", "synchronous"}} {
+	for _, form := range [][2]string{{"", ""}, {"generic", ""}, {"", "legacy"}, {"generic", "synchronous"}, {"audio.tts", "legacy"}, {"audio.unknown", "synchronous"}} {
 		_, _, err := NormalizeRelayLeaseAccounting(form[0], form[1])
 		require.Error(t, err, "%v", form)
 	}
@@ -65,7 +65,7 @@ func TestUpsertRelayLeaseExplicitGenericStoresGenericLegacy(t *testing.T) {
 	truncateTables(t)
 	seedCreditUser(t, 19002, 3_000_000)
 
-	for _, form := range [][2]string{{"generic", "legacy"}, {"", ""}} {
+	for _, form := range [][2]string{{"generic", "legacy"}} {
 		spec := RelayLeaseSpec{
 			ExternalLeaseId:      "generic-lease-19002-" + form[0],
 			NewApiUserId:         19002,
@@ -74,6 +74,7 @@ func TestUpsertRelayLeaseExplicitGenericStoresGenericLegacy(t *testing.T) {
 			ExpiredTime:          time.Now().Add(time.Hour).Unix(),
 			Purpose:              form[0],
 			AccountingMode:       form[1],
+			Operation:            "chat.completions",
 		}
 		issued, leaseErr := UpsertRelayLease(spec)
 		require.Nil(t, leaseErr)

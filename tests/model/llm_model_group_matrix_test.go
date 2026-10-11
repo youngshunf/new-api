@@ -82,6 +82,7 @@ func TestLlmModelGroupRealDatabaseMatrix(t *testing.T) {
 			issued, leaseErr := model.UpsertRelayLease(spec)
 			require.Nil(t, leaseErr)
 			spec.ModelGroup = "pro"
+			spec.CredentialGeneration++
 			_, leaseErr = model.UpsertRelayLease(spec)
 			require.Nil(t, leaseErr)
 			var group string

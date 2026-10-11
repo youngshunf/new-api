@@ -100,8 +100,10 @@ type LlmRelayLeaseRequest struct {
 	ModelLimits []string `json:"model_limits"`
 	// ExpiresTime 是 lease 到期时刻（RFC3339），必填且必须在将来。
 	ExpiresTime    string `json:"expires_time"`
-	Purpose        string `json:"purpose,omitempty"`
-	AccountingMode string `json:"accounting_mode,omitempty"`
+	Purpose        string `json:"purpose"`
+	AccountingMode string `json:"accounting_mode"`
+	// Operation 仅普通call携带；Runtime省略，不接受显式空值。
+	Operation string `json:"operation,omitempty"`
 }
 
 // LlmRelayLeaseView 是签发/更新的回执。
@@ -115,13 +117,14 @@ type LlmRelayLeaseView struct {
 	ExpiresTime          string   `json:"expires_time"`
 	Purpose              string   `json:"purpose,omitempty"`
 	AccountingMode       string   `json:"accounting_mode,omitempty"`
+	Operation            string   `json:"operation,omitempty"`
 	// TokenPrefix 是明文 Token 的前缀，供平台存进 `llm.credential_lease.token_prefix` 做人可读定位。
 	TokenPrefix string `json:"token_prefix"`
 	// RelayToken 是**明文 Relay Token**，可直接作为 Bearer 使用。
 	// 它只允许出现在这个响应体里：不进日志、不进错误体、不进平台数据库（设计 §17.2）。
 	RelayToken string `json:"relay_token"`
 	// Created 本次调用是否新建了 Token；Rotated 本次调用是否换了 Key。
-	// 两者都为 false 就是一次纯幂等重投（或只改了白名单与期限）。
+	// 两者都为 false 就是完整同规格的幂等重投。
 	Created bool `json:"created"`
 	Rotated bool `json:"rotated"`
 }

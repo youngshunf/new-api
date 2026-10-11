@@ -134,10 +134,11 @@ func TestUpsertRelayLeasePersistsModelGroup(t *testing.T) {
 	assert.Equal(t, "", stored.ModelLimits)
 
 	spec.ModelGroup = "pro"
+	spec.CredentialGeneration++
 	moved, leaseErr := UpsertRelayLease(spec)
 	require.Nil(t, leaseErr)
-	assert.False(t, moved.Rotated, "改组不换 Key")
+	assert.True(t, moved.Rotated, "改组必须升代并换Key")
 	require.NoError(t, DB.First(&stored, issued.Token.Id).Error)
 	assert.Equal(t, "pro", stored.ModelGroup)
-	assert.Equal(t, issued.Token.Key, stored.Key)
+	assert.NotEqual(t, issued.Token.Key, stored.Key)
 }

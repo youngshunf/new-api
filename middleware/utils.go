@@ -32,7 +32,11 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 		})
 	}
 	c.Abort()
-	logger.LogError(c.Request.Context(), fmt.Sprintf("user %d | %s", userId, message))
+	if statusCode < 500 {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("user %d | %s", userId, message))
+	} else {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("user %d | %s", userId, message))
+	}
 }
 
 func abortWithMidjourneyMessage(c *gin.Context, statusCode int, code int, description string) {

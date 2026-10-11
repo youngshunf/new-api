@@ -280,7 +280,7 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
-	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil {
+	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil || token.Operation != "" {
 		common.ApiError(c, fmt.Errorf("普通令牌请求不得设置受管用途、账务模式或租约绑定"))
 		return
 	}
@@ -379,7 +379,7 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
-	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil {
+	if token.Purpose != "" || token.AccountingMode != "" || token.ExternalLeaseId != nil || token.Operation != "" {
 		common.ApiError(c, fmt.Errorf("普通令牌请求不得设置受管用途、账务模式或租约绑定"))
 		return
 	}
