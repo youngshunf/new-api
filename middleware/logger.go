@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,14 @@ func SetUpLogger(server *gin.Engine) {
 		if tag == "" {
 			tag = "web"
 		}
+		path := param.Path
+		pathOnly, _, _ := strings.Cut(path, "?")
+		// 单次材料令牌是bearer凭据；错误路径与查询也仅输出稳定路由名。
+		// 只修改日志副本，不能改取件所需的URL、查询或Param。
+		const materialRoute = "/v1/audio/voice-materials"
+		if strings.EqualFold(pathOnly, materialRoute) || strings.HasPrefix(strings.ToLower(pathOnly), materialRoute+"/") {
+			path = materialRoute + "/:token"
+		}
 		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",
 			param.TimeStamp.Format("2006/01/02 - 15:04:05"),
 			tag,
@@ -35,7 +44,7 @@ func SetUpLogger(server *gin.Engine) {
 			param.Latency,
 			param.ClientIP,
 			param.Method,
-			param.Path,
+			path,
 		)
 	}))
 }
