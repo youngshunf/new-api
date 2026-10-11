@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
@@ -28,17 +29,22 @@ var operationRoutes = map[string][]string{
 }
 
 func authorizeTokenOperation(c *gin.Context, token *model.Token) error {
-	if token.Operation == "" {
-		return nil
-	}
 	route := c.Request.Method + " " + c.FullPath()
-	if route == "GET /v1/models" || route == "GET /v1/models/:model" {
-		return nil
-	}
-	for _, allowed := range operationRoutes[token.Operation] {
-		if route == allowed {
-			return nil
+	allowed := token.Operation == ""
+	if token.Operation == "" && token.ExternalLeaseId != nil && *token.ExternalLeaseId != "" {
+		// 受管Runtime仅授权普通推理；持久音色必须另取带用途的call租约。
+		for _, operation := range []string{"audio.voice_create", "audio.voice_query", "audio.voice_delete"} {
+			if slices.Contains(operationRoutes[operation], route) {
+				allowed = false
+				break
+			}
 		}
+	}
+	if token.Operation != "" {
+		allowed = route == "GET /v1/models" || route == "GET /v1/models/:model" || slices.Contains(operationRoutes[token.Operation], route)
+	}
+	if allowed {
+		return nil
 	}
 	err := errors.New("relay lease operation does not allow this endpoint")
 	abortWithOpenAiMessage(c, http.StatusForbidden, err.Error())
