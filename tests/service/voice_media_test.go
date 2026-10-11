@@ -20,7 +20,7 @@ func TestVoiceMaterialSingleUseSurvivesRestart(t *testing.T) {
 	root := t.TempDir()
 	store, err := service.NewVoiceMediaStore(root)
 	require.NoError(t, err)
-	content, err := os.ReadFile("../model/voice_schema_test.go")
+	content, err := os.ReadFile("../fixtures/voice-preview.wav")
 	require.NoError(t, err)
 	token, err := store.SaveMaterial(bytes.NewReader(content))
 	require.NoError(t, err)

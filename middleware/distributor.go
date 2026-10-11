@@ -20,7 +20,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -45,25 +44,8 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
-		// pin与普通选渠道共用模型组和单模型名单检查，不能以绑定渠道绕过租约。
-		modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
-		if modelLimitEnable {
-			s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
-			if !ok {
-				// 缺少模型限制上下文时拒绝全部模型
-				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
-				return
-			}
-			var tokenModelLimit map[string]bool
-			tokenModelLimit, ok = s.(map[string]bool)
-			if !ok {
-				tokenModelLimit = map[string]bool{}
-			}
-			matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // 兼容既有gpts与thinking模型匹配
-			if _, ok := tokenModelLimit[matchName]; !ok {
-				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
-				return
-			}
+		if !EnforceRelayModelAccess(c, modelRequest.Model) {
+			return
 		}
 
 		if pin, found, overridden := constraints.ResolvedPin(); found {
@@ -419,7 +401,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	var modelRequest ModelRequest
 	shouldSelectChannel := true
 	var err error
-	if modelName := c.GetString("resolved_task_model"); modelName != "" {
+	if modelName := c.GetString("resolved_audio_voice_model"); modelName != "" {
+		modelRequest.Model = modelName
+	} else if modelName := c.GetString("resolved_task_model"); modelName != "" {
 		modelRequest.Model = modelName
 	} else if strings.Contains(c.Request.URL.Path, "/mj/") {
 		relayMode := relayconstant.Path2RelayModeMidjourney(c.Request.URL.Path)

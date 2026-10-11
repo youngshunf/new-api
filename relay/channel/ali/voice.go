@@ -110,6 +110,10 @@ func (a *voiceEnrollmentAdaptor) GetRequestURL(info *relaycommon.RelayInfo) (str
 
 // CallVoiceEnrollment共用渠道的HeaderOverride、代理和派发观测；无任何创建重试。
 func CallVoiceEnrollment(c *gin.Context, info *relaycommon.RelayInfo, request VoiceEnrollmentRequest) (*VoiceEnrollmentResult, error) {
+	expectedModel := request.Input.TargetModel
+	if request.Input.Action != "create_voice" {
+		request.Input.TargetModel = ""
+	}
 	body, err := common.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -128,7 +132,7 @@ func CallVoiceEnrollment(c *gin.Context, info *relaycommon.RelayInfo, request Vo
 		return nil, &VoiceEnrollmentError{Code: "provider_response_unknown"}
 	}
 	defer response.Body.Close()
-	result, err := DecodeVoiceEnrollmentResponse(response.StatusCode, response.Body, request.Input.Action, request.Input.TargetModel, request.Input.VoiceID)
+	result, err := DecodeVoiceEnrollmentResponse(response.StatusCode, response.Body, request.Input.Action, expectedModel, request.Input.VoiceID)
 	if result != nil {
 		c.Set(common.UpstreamRequestIdKey, result.RequestID)
 	}

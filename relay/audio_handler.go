@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -27,10 +28,21 @@ func AudioHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	if err != nil {
 		return types.NewError(fmt.Errorf("failed to copy request to AudioRequest: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
+	var voiceProfile *model.VoiceProfile
+	if model.ValidVoiceRef(request.Voice) {
+		voiceProfile, err = model.ValidateVoiceSynthesis(c.Request.Context(), info.UserId, request.Voice, info.OriginModelName)
+		if err != nil || voiceProfile.ChannelId != int64(info.ChannelId) {
+			return types.NewErrorWithStatusCode(errors.New("voice_unavailable"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		request.Voice = *voiceProfile.ProviderVoiceId
+	}
 
 	err = helper.ModelMappedHelper(c, info, request)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	if voiceProfile != nil && request.Model != voiceProfile.TargetModel {
+		return types.NewErrorWithStatusCode(errors.New("voice_model_mismatch"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 
 	adaptor := GetAdaptor(info.ApiType)

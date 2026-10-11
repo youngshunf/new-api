@@ -71,6 +71,10 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	SetVoiceRouter(router, relayV1Router)
+	relayV1Router.POST("/audio/speech", middleware.PrepareVoiceSpeech(), middleware.Distribute(), func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatOpenAIAudio)
+	})
 	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")
@@ -130,9 +134,6 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatOpenAIAudio)
 		})
 		httpRouter.POST("/audio/translations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIAudio)
-		})
-		httpRouter.POST("/audio/speech", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIAudio)
 		})
 

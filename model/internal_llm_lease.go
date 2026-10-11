@@ -312,7 +312,7 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 
 	if existing.UserId != spec.NewApiUserId {
 		return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorAccountMismatch, false,
-			"lease %s is already issued under another account; revoke it before re-issuing",
+			"lease %s is already issued under another account; use a new external_lease_id",
 			spec.ExternalLeaseId)
 	}
 	if existing.DeletedAt.Valid {

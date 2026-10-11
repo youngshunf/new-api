@@ -305,6 +305,9 @@ func InitResources() error {
 	ratio_setting.InitRatioSettings()
 
 	service.InitHttpClient()
+	if err = service.InitVoiceMedia(); err != nil {
+		return fmt.Errorf("initialize voice media: %w", err)
+	}
 
 	service.InitTokenEncoders()
 

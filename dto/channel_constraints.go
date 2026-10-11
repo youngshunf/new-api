@@ -3,8 +3,9 @@ package dto
 type ChannelPinSource string
 
 const (
-	PinSourceToken      ChannelPinSource = "token"       // Rank 0, highest
-	PinSourceOriginTask ChannelPinSource = "origin_task" // Rank 10
+	PinSourceToken       ChannelPinSource = "token"        // Rank 0, highest
+	PinSourceOriginTask  ChannelPinSource = "origin_task"  // Rank 10
+	PinSourceOriginVoice ChannelPinSource = "origin_voice" // 音色必须保持原渠道
 )
 
 const (

@@ -1,7 +1,10 @@
 package channeltests
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +22,45 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAliVoicePreviewDecodesActualPCMAndRejectsInvalidAudio(t *testing.T) {
+	wave := make([]byte, 46)
+	copy(wave, "RIFF")
+	binary.LittleEndian.PutUint32(wave[4:], 38)
+	copy(wave[8:], "WAVEfmt ")
+	binary.LittleEndian.PutUint32(wave[16:], 16)
+	binary.LittleEndian.PutUint16(wave[20:], 1)
+	binary.LittleEndian.PutUint16(wave[22:], 1)
+	binary.LittleEndian.PutUint32(wave[24:], 24000)
+	binary.LittleEndian.PutUint32(wave[28:], 48000)
+	binary.LittleEndian.PutUint16(wave[32:], 2)
+	binary.LittleEndian.PutUint16(wave[34:], 16)
+	copy(wave[36:], "data")
+	binary.LittleEndian.PutUint32(wave[40:], 2)
+	binary.LittleEndian.PutUint16(wave[44:], 1234)
+	for _, tc := range []struct {
+		name, encoded string
+		valid         bool
+	}{
+		{"PCM", base64.StdEncoding.EncodeToString(wave), true},
+		{"invalid-base64", "%%%", false},
+		{"invalid-WAV", base64.StdEncoding.EncodeToString([]byte("RIFF-broken")), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := common.Marshal(map[string]any{"request_id": "codec-unit", "output": map[string]any{"voice_id": "voice1", "preview_audio": map[string]any{"data": tc.encoded, "response_format": "wav", "sample_rate": 24000}}})
+			require.NoError(t, err)
+			result, err := ali.DecodeVoiceEnrollmentResponse(200, bytes.NewReader(body), "create_voice", "cosyvoice-v3.5-plus", "")
+			require.NoError(t, err)
+			decoded, err := ali.DecodeVoicePreview(result)
+			if tc.valid {
+				require.NoError(t, err)
+				assert.Equal(t, wave, decoded)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
 
 func TestAliVoiceEnrollmentSingleDispatchOnTransportFault(t *testing.T) {
 	service.InitHttpClient()
