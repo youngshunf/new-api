@@ -3,9 +3,11 @@ package controller
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -75,6 +77,11 @@ func GetInternalModelInventory(c *gin.Context) {
 	}
 	inventory, err := buildModelInventory(pricing, model.GetVendors(), model.GetSupportedEndpointMap(),
 		ratio_setting.GetGroupRatioCopy(), time.Now())
+	if errors.Is(err, dto.ErrLlmInventoryLimits) {
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable,
+			"inventory_limits_exceeded", "完整模型库存超过资源边界", false)
+		return
+	}
 	if err != nil {
 		logger.LogError(c, "failed to compute model inventory revision: "+err.Error())
 		middleware.AbortWithInternalServiceError(c, http.StatusInternalServerError,
@@ -88,7 +95,19 @@ func GetInternalModelInventory(c *gin.Context) {
 			"inventory_revision_unavailable", "inventory revision persistence failed", true)
 		return
 	}
-	c.JSON(http.StatusOK, inventory)
+	payload, err := inventory.EncodeResourceBounded()
+	if errors.Is(err, dto.ErrLlmInventoryLimits) {
+		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable,
+			"inventory_limits_exceeded", "完整模型库存超过资源边界", false)
+		return
+	}
+	if err != nil {
+		middleware.AbortWithInternalServiceError(c, http.StatusInternalServerError,
+			"inventory_digest_failed", "完整模型库存编码失败", false)
+		return
+	}
+	// 真实revision加入后再核最终体积；成功头之前已拿到完整受限字节，不再经c.JSON二次编码。
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
 }
 
 // buildModelInventory 把 /api/pricing 的聚合结果整理成库存快照，并算出 source_revision。
@@ -99,16 +118,25 @@ func buildModelInventory(pricing []model.Pricing, vendors []model.PricingVendor,
 	endpoints map[string]common.EndpointInfo, groupRatio map[string]float64,
 	measuredAt time.Time) (*dto.LlmModelInventory, error) {
 
+	if len(pricing) > dto.LlmInventoryMaxModels || len(vendors) > dto.LlmInventoryMaxVendors ||
+		len(endpoints) > dto.LlmInventoryMaxSupportedEndpoints || len(groupRatio) > dto.LlmInventoryMaxGroupRatios {
+		return nil, dto.ErrLlmInventoryLimits
+	}
 	entries := make([]dto.LlmModelInventoryEntry, 0, len(pricing))
 	for _, item := range pricing {
+		if len(item.EnableGroup) > dto.LlmInventoryMaxEnableGroups || len(item.SupportedEndpointTypes) > dto.LlmInventoryMaxEndpointTypes {
+			return nil, dto.ErrLlmInventoryLimits
+		}
 		// 全部切片都先复制再排序：pricing 是 model 包的共享缓存，就地排序会改到别人的数据。
 		enableGroups := append([]string(nil), item.EnableGroup...)
 		sort.Strings(enableGroups)
+		enableGroups = slices.Compact(enableGroups)
 		endpointTypes := make([]string, 0, len(item.SupportedEndpointTypes))
 		for _, endpointType := range item.SupportedEndpointTypes {
 			endpointTypes = append(endpointTypes, string(endpointType))
 		}
 		sort.Strings(endpointTypes)
+		endpointTypes = slices.Compact(endpointTypes)
 
 		entries = append(entries, dto.LlmModelInventoryEntry{
 			ModelName:              item.ModelName,
@@ -159,15 +187,21 @@ func buildModelInventory(pricing []model.Pricing, vendors []model.PricingVendor,
 		GroupRatio:        groupRatio,
 		SupportedEndpoint: supportedEndpoint,
 	}
+	inventory := &dto.LlmModelInventory{
+		SourceDigest:              strings.Repeat("0", sha256.Size*2),
+		MeasuredAt:                measuredAt.UTC().Format(time.RFC3339),
+		LlmModelInventorySnapshot: snapshot,
+	}
+	// 编码摘要前先逐片证明全集有限，避免无限说明字符串先进入Marshal缓冲。
+	if err := inventory.ValidateResourceLimits(); err != nil {
+		return nil, err
+	}
 	revision, err := modelInventoryRevision(snapshot)
 	if err != nil {
 		return nil, err
 	}
-	return &dto.LlmModelInventory{
-		SourceDigest:              revision,
-		MeasuredAt:                measuredAt.UTC().Format(time.RFC3339),
-		LlmModelInventorySnapshot: snapshot,
-	}, nil
+	inventory.SourceDigest = revision
+	return inventory, nil
 }
 
 // modelInventoryRevision 对快照取 sha256。

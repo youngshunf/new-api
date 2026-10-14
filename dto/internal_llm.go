@@ -1,6 +1,11 @@
 package dto
 
-import "github.com/QuantumNous/new-api/common"
+import (
+	"errors"
+	"unicode/utf8"
+
+	"github.com/QuantumNous/new-api/common"
+)
 
 // 面向 Cloud 的内部 LLM 控制面契约（LLM 网关设计 §15.1）。
 //
@@ -39,7 +44,7 @@ type LlmModelBillingFacts struct {
 // LlmModelInventoryEntry 是一个模型在 NewAPI 侧的库存事实（设计 §5.1）。
 type LlmModelInventoryEntry struct {
 	ModelName string `json:"model_name"`
-	// SupportedEndpointTypes 与 EnableGroups 已按字典序排好：
+	// SupportedEndpointTypes 与 EnableGroups 已去重并按字典序排好：
 	// 上游是集合与 map 迭代，顺序天然不稳定，不排序会让同一份库存算出不同的 source_revision。
 	SupportedEndpointTypes []string             `json:"supported_endpoint_types"`
 	EnableGroups           []string             `json:"enable_groups"`
@@ -78,6 +83,147 @@ type LlmModelInventory struct {
 	// MeasuredAt 是本次快照的读取时刻（RFC3339），只用于新鲜度判定，不进摘要。
 	MeasuredAt string `json:"measured_at"`
 	LlmModelInventorySnapshot
+}
+
+// 库存版本1资源界来自平台后台设计§1.7；只约束完整库存，不改变租约或模型组请求。
+const (
+	LlmInventoryMaxModels             = 4096
+	LlmInventoryMaxModelBytes         = 4096
+	LlmInventoryMaxResponseBytes      = 16 * 1024 * 1024
+	LlmInventoryMaxEndpointTypes      = 32
+	LlmInventoryMaxEnableGroups       = 128
+	LlmInventoryMaxVendors            = 256
+	LlmInventoryMaxGroupRatios        = 128
+	LlmInventoryMaxSupportedEndpoints = 32
+)
+
+// ErrLlmInventoryLimits 表示库存不能作为完整成功快照交付；调用方不能截断后继续。
+var ErrLlmInventoryLimits = errors.New("inventory_limits_exceeded")
+
+// inventoryEncodedSize 在编码前以原字符串长度作必要下界，随后只编码一个有限DTO片。
+// 字符串转义和map键长度仍由common.Marshal精确计算，不自写JSON编码器或估算拒绝合法边界。
+func inventoryEncodedSize(value any, remaining int, strings ...string) (int, error) {
+	if remaining < 0 {
+		return 0, ErrLlmInventoryLimits
+	}
+	raw := 0
+	for _, text := range strings {
+		if len(text) > remaining-raw {
+			return 0, ErrLlmInventoryLimits
+		}
+		raw += len(text)
+	}
+	encoded, err := common.Marshal(value)
+	if err != nil {
+		return 0, err
+	}
+	if len(encoded) > remaining {
+		return 0, ErrLlmInventoryLimits
+	}
+	return len(encoded), nil
+}
+
+// ValidateResourceLimits 精确核对最终DTO编码大小，所有组件都先证明有限才完整编码。
+// 固定DTO没有any或RawMessage；最多四层JSON容器，天然满足版本1深度≤8，文案不解释为JSON。
+// 此方法不改输入；集合的复制、去重与排序由库存构建入口负责。
+func (inventory *LlmModelInventory) ValidateResourceLimits() error {
+	if inventory == nil || len(inventory.Models) > LlmInventoryMaxModels ||
+		len(inventory.Vendors) > LlmInventoryMaxVendors || len(inventory.GroupRatio) > LlmInventoryMaxGroupRatios ||
+		len(inventory.SupportedEndpoint) > LlmInventoryMaxSupportedEndpoints {
+		return ErrLlmInventoryLimits
+	}
+	// 保留同DTO的nil/empty形态及整数水位，骨架让字段名、null、容器开销由成熟编码器负责。
+	skeleton := *inventory
+	if inventory.Models != nil {
+		skeleton.Models = []LlmModelInventoryEntry{}
+	}
+	if inventory.Vendors != nil {
+		skeleton.Vendors = []LlmInventoryVendor{}
+	}
+	if inventory.GroupRatio != nil {
+		skeleton.GroupRatio = map[string]float64{}
+	}
+	if inventory.SupportedEndpoint != nil {
+		skeleton.SupportedEndpoint = map[string]common.EndpointInfo{}
+	}
+	total, err := inventoryEncodedSize(skeleton, LlmInventoryMaxResponseBytes, inventory.SourceDigest, inventory.MeasuredAt)
+	if err != nil {
+		return err
+	}
+	for index, entry := range inventory.Models {
+		if len(entry.ModelName) > 128 || !utf8.ValidString(entry.ModelName) ||
+			len(entry.SupportedEndpointTypes) > LlmInventoryMaxEndpointTypes || len(entry.EnableGroups) > LlmInventoryMaxEnableGroups {
+			return ErrLlmInventoryLimits
+		}
+		texts := []string{entry.ModelName, entry.Description, entry.Tags, entry.BillingFacts.BillingMode, entry.BillingFacts.BillingExpr}
+		texts = append(texts, entry.SupportedEndpointTypes...)
+		texts = append(texts, entry.EnableGroups...)
+		size, err := inventoryEncodedSize(entry, LlmInventoryMaxModelBytes, texts...)
+		if err != nil {
+			return err
+		}
+		if index > 0 {
+			total++
+		}
+		total += size
+		if total > LlmInventoryMaxResponseBytes {
+			return ErrLlmInventoryLimits
+		}
+	}
+	for index, vendor := range inventory.Vendors {
+		if index > 0 {
+			total++
+		}
+		size, err := inventoryEncodedSize(vendor, LlmInventoryMaxResponseBytes-total, vendor.Name, vendor.Description)
+		if err != nil {
+			return err
+		}
+		total += size
+	}
+	index := 0
+	for name, ratio := range inventory.GroupRatio {
+		if index > 0 {
+			total++
+		}
+		size, err := inventoryEncodedSize(map[string]float64{name: ratio}, LlmInventoryMaxResponseBytes-total+2, name)
+		if err != nil {
+			return err
+		}
+		total += size - 2
+		index++
+	}
+	index = 0
+	for name, endpoint := range inventory.SupportedEndpoint {
+		if index > 0 {
+			total++
+		}
+		size, err := inventoryEncodedSize(map[string]common.EndpointInfo{name: endpoint}, LlmInventoryMaxResponseBytes-total+2, name, endpoint.Path, endpoint.Method)
+		if err != nil {
+			return err
+		}
+		total += size - 2
+		index++
+	}
+	if total > LlmInventoryMaxResponseBytes {
+		return ErrLlmInventoryLimits
+	}
+	return nil
+}
+
+// EncodeResourceBounded 仅在精确大小已验证后编码整包，不把LimitedWriter包无限Marshal冒称流式。
+func (inventory *LlmModelInventory) EncodeResourceBounded() ([]byte, error) {
+	if err := inventory.ValidateResourceLimits(); err != nil {
+		return nil, err
+	}
+	encoded, err := common.Marshal(inventory)
+	if err != nil {
+		return nil, err
+	}
+	// 整包此前已证明有界；复核长度防止DTO后续演进遗漏分片计量，不是事后无限编码门。
+	if len(encoded) > LlmInventoryMaxResponseBytes {
+		return nil, ErrLlmInventoryLimits
+	}
+	return encoded, nil
 }
 
 // LlmRelayLeaseRequest 是 PUT /api/internal/v1/llm/relay-leases/{external_lease_id} 的入参。
