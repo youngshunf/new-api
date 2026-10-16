@@ -81,6 +81,8 @@ func (m *memoryStorage) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
+		m.data = nil
+		m.reader.Reset(nil)
 		DecrementMemoryBuffers(m.size)
 	}
 	return nil
