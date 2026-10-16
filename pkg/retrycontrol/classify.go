@@ -142,6 +142,7 @@ var reasonByErrorCode = map[string]Reason{
 	"task_insert_failed":             ReasonGatewayInternalError,
 	"task_billing_settlement_failed": ReasonGatewayInternalError,
 	"task_submit_failed":             ReasonGatewayInternalError,
+	"video_generate_cleanup_failed":  ReasonUnclassifiedFailure,
 
 	// 调用方
 	"request_cancelled": ReasonCallerCancelled,
