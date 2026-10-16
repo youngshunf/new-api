@@ -1,10 +1,14 @@
 package commontests
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -118,7 +122,7 @@ func TestCleanupBodyStorageCutsOwnerReferencesWithRequestWrapperStillAlive(t *te
 	requestBody := c.Request.Body
 	t.Cleanup(func() { assert.NoError(t, requestBody.Close()) })
 
-	common.CleanupBodyStorage(c)
+	require.NoError(t, common.CleanupBodyStorage(c))
 	cached, exists := c.Get(common.KeyBodyStorage)
 	require.True(t, exists)
 	assert.Nil(t, cached, "原 Gin 清理必须断开 Context 对 storage 的引用")
@@ -139,11 +143,185 @@ func TestCleanupBodyStorageCutsOwnerReferencesWithRequestWrapperStillAlive(t *te
 	after := common.GetDiskCacheStats()
 	assert.Equal(t, before.ActiveMemoryBuffers, after.ActiveMemoryBuffers)
 	assert.Equal(t, before.CurrentMemoryUsageBytes, after.CurrentMemoryUsageBytes)
-	common.CleanupBodyStorage(c)
+	require.NoError(t, common.CleanupBodyStorage(c))
 	repeated := common.GetDiskCacheStats()
 	assert.Equal(t, after.ActiveMemoryBuffers, repeated.ActiveMemoryBuffers, "重复 Gin 清理不得再次减数")
 	assert.Equal(t, after.CurrentMemoryUsageBytes, repeated.CurrentMemoryUsageBytes)
 	assert.True(t, data.IsNil())
 	assert.True(t, backing.IsNil())
 	assert.Equal(t, expected, payload)
+}
+
+// Windows独立reader真实阻止删除；失败仍归原owner负责，后续显式Close才能完成收口。
+func TestDiskBodyStorageCloseRetainsRemovalFailureUntilReaderCloses(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("本反例依赖Windows真实文件共享删除语义，不声明其它平台通过")
+	}
+	root := t.TempDir()
+	config := common.GetDiskCacheConfig()
+	t.Cleanup(func() { common.SetDiskCacheConfig(config) })
+	before := common.GetDiskCacheStats()
+	common.SetDiskCacheConfig(common.DiskCacheConfig{
+		Enabled: true, ThresholdMB: 0, MaxSizeMB: int(before.CurrentDiskUsageBytes>>20) + 2, Path: root,
+	})
+	// 额外持有真实磁盘owner，防DecrementDiskFiles的钳零掩盖重复减计数。
+	payloads := [][]byte{[]byte("disk-body-statistics-guard-payload"), []byte("disk-body-locked-payload")}
+	var storages []common.BodyStorage
+	var readers []*os.File
+	var paths []string
+	var readerClosed []bool
+	for _, payload := range payloads {
+		storage, err := common.CreateBodyStorage(payload)
+		require.NoError(t, err)
+		index := len(storages)
+		storages = append(storages, storage)
+		readerClosed = append(readerClosed, false)
+		var replay io.ReadCloser
+		ownedPath := ""
+		t.Cleanup(func() {
+			if replay != nil && !readerClosed[index] {
+				assert.NoError(t, replay.Close())
+			}
+			assert.NoError(t, storage.Close())
+			// 旧实现首红时可能遗留文件；仅兜底删除已经证明属于本临时目录的路径。
+			if ownedPath != "" {
+				if err := os.Remove(ownedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("清理本测试磁盘文件失败: %v", err)
+				}
+			}
+		})
+		require.True(t, storage.IsDisk(), "反例必须创建真实磁盘owner，内存fallback不能算通过")
+		replay, err = storage.NewReader()
+		require.NoError(t, err)
+		file, ok := replay.(*os.File)
+		require.True(t, ok, "文件路径必须由原公开NewReader返回的真实os.File取得")
+		path := file.Name()
+		relative, err := filepath.Rel(root, path)
+		require.NoError(t, err)
+		require.True(t, filepath.IsLocal(relative), "仅允许观察和清理本t.TempDir内的路径")
+		require.NotEqual(t, ".", relative)
+		ownedPath = path
+		readers, paths = append(readers, file), append(paths, path)
+	}
+	created := common.GetDiskCacheStats()
+	assert.Equal(t, before.ActiveDiskFiles+2, created.ActiveDiskFiles)
+	assert.Equal(t, before.CurrentDiskUsageBytes+int64(len(payloads[0])+len(payloads[1])), created.CurrentDiskUsageBytes)
+
+	storage, replay, path := storages[1], readers[1], paths[1]
+	for attempt := 0; attempt < 2; attempt++ {
+		err := storage.Close()
+		require.Error(t, err, "独立reader尚在持有文件，第%d次Close不得谎报删除成功", attempt+1)
+		var pathError *os.PathError
+		require.True(t, errors.As(err, &pathError), "必须返回真实文件删除错误，不是测试制造的error")
+		assert.Equal(t, "remove", pathError.Op)
+		assert.Equal(t, path, pathError.Path)
+		assert.False(t, errors.Is(err, os.ErrClosed), "重复Close应只重试未完成的移除，不能重复关闭原句柄")
+		stat, statErr := os.Stat(path)
+		require.NoError(t, statErr)
+		assert.EqualValues(t, len(payloads[1]), stat.Size())
+		_, seekErr := replay.Seek(0, io.SeekStart)
+		require.NoError(t, seekErr)
+		actual, readErr := io.ReadAll(replay)
+		require.NoError(t, readErr)
+		assert.Equal(t, payloads[1], actual, "owner关闭失败不得破坏已交出的独立reader")
+		pending := common.GetDiskCacheStats()
+		assert.Equal(t, created.ActiveDiskFiles, pending.ActiveDiskFiles, "文件未移除不得先减磁盘计数")
+		assert.Equal(t, created.CurrentDiskUsageBytes, pending.CurrentDiskUsageBytes)
+	}
+	require.NoError(t, replay.Close())
+	readerClosed[1] = true
+	require.NoError(t, storage.Close(), "独立reader关闭后显式Close应完成真正的删除")
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	after := common.GetDiskCacheStats()
+	assert.Equal(t, before.ActiveDiskFiles+1, after.ActiveDiskFiles)
+	assert.Equal(t, before.CurrentDiskUsageBytes+int64(len(payloads[0])), after.CurrentDiskUsageBytes)
+	require.NoError(t, storage.Close(), "成功后的再次Close必须幂等")
+	repeated := common.GetDiskCacheStats()
+	assert.Equal(t, after.ActiveDiskFiles, repeated.ActiveDiskFiles, "仍有guard文件，重复减数不能被钳零掩盖")
+	assert.Equal(t, after.CurrentDiskUsageBytes, repeated.CurrentDiskUsageBytes)
+}
+
+func TestCleanupBodyStorageRetainsDiskOwnerOnFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("本反例依赖Windows真实文件共享删除语义，不声明其它平台通过")
+	}
+	root := t.TempDir()
+	config := common.GetDiskCacheConfig()
+	t.Cleanup(func() { common.SetDiskCacheConfig(config) })
+	before := common.GetDiskCacheStats()
+	common.SetDiskCacheConfig(common.DiskCacheConfig{
+		Enabled: true, ThresholdMB: 0, MaxSizeMB: int(before.CurrentDiskUsageBytes>>20) + 2, Path: root,
+	})
+	// 保留另一真实磁盘owner，避免统计钳零掩盖重复清理造成的多减。
+	payloads := [][]byte{[]byte("gin-disk-statistics-guard"), []byte("gin-disk-locked-owner")}
+	var storages []common.BodyStorage
+	for _, payload := range payloads {
+		storage, err := common.CreateBodyStorage(payload)
+		require.NoError(t, err)
+		t.Cleanup(func() { assert.NoError(t, storage.Close()) })
+		require.True(t, storage.IsDisk(), "必须创建真实磁盘owner，内存fallback不能作为证据")
+		storages = append(storages, storage)
+	}
+	storage := storages[1]
+	replay, err := storage.NewReader()
+	require.NoError(t, err)
+	readerClosed := false
+	t.Cleanup(func() {
+		if !readerClosed {
+			assert.NoError(t, replay.Close())
+		}
+	})
+	file, ok := replay.(*os.File)
+	require.True(t, ok, "锁删除必须来自原NewReader的真实文件句柄")
+	path := file.Name()
+	relative, err := filepath.Rel(root, path)
+	require.NoError(t, err)
+	require.True(t, filepath.IsLocal(relative), "仅观察本测试临时目录内的文件")
+	require.NotEqual(t, ".", relative)
+	created := common.GetDiskCacheStats()
+	assert.Equal(t, before.ActiveDiskFiles+2, created.ActiveDiskFiles)
+	assert.Equal(t, before.CurrentDiskUsageBytes+int64(len(payloads[0])+len(payloads[1])), created.CurrentDiskUsageBytes)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/body-storage-disk-cleanup", http.NoBody)
+	c.Set(common.KeyBodyStorage, storage)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		// 原公开清理必须运输真实删除错误，并保留Context中的原owner。
+		err := common.CleanupBodyStorage(c)
+		require.Error(t, err)
+		var pathError *os.PathError
+		require.ErrorAs(t, err, &pathError)
+		assert.Equal(t, "remove", pathError.Op)
+		assert.Equal(t, path, pathError.Path)
+		cached, exists := c.Get(common.KeyBodyStorage)
+		require.True(t, exists)
+		require.Same(t, storage, cached, "第%d次真实删除失败必须保留原owner供后续重试", attempt+1)
+		stat, statErr := os.Stat(path)
+		require.NoError(t, statErr)
+		assert.EqualValues(t, len(payloads[1]), stat.Size())
+		_, err = file.Seek(0, io.SeekStart)
+		require.NoError(t, err)
+		actual, readErr := io.ReadAll(replay)
+		require.NoError(t, readErr)
+		assert.Equal(t, payloads[1], actual, "清理失败不能破坏调用方仍持有的独立reader")
+		pending := common.GetDiskCacheStats()
+		assert.Equal(t, created.ActiveDiskFiles, pending.ActiveDiskFiles)
+		assert.Equal(t, created.CurrentDiskUsageBytes, pending.CurrentDiskUsageBytes)
+	}
+	require.NoError(t, replay.Close())
+	readerClosed = true
+	require.NoError(t, common.CleanupBodyStorage(c))
+	cached, exists := c.Get(common.KeyBodyStorage)
+	require.True(t, exists)
+	assert.Nil(t, cached, "真实删除成功后才能断开Context的owner引用")
+	_, err = os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	after := common.GetDiskCacheStats()
+	assert.Equal(t, before.ActiveDiskFiles+1, after.ActiveDiskFiles)
+	assert.Equal(t, before.CurrentDiskUsageBytes+int64(len(payloads[0])), after.CurrentDiskUsageBytes)
+	require.NoError(t, common.CleanupBodyStorage(c))
+	repeated := common.GetDiskCacheStats()
+	assert.Equal(t, after.ActiveDiskFiles, repeated.ActiveDiskFiles, "guard仍在，重复清理不得再次减数")
+	assert.Equal(t, after.CurrentDiskUsageBytes, repeated.CurrentDiskUsageBytes)
 }
