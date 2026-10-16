@@ -96,6 +96,8 @@ const (
 	ReasonGatewayInternalError Reason = "gateway_internal_error"
 	// ReasonUnclassifiedFailure 落不进上面任何一格。按不可重放处理。
 	ReasonUnclassifiedFailure Reason = "unclassified_failure"
+	// ReasonLocalResourceBusy 宿主本地资源忙，不允许换渠道或换模型重放。
+	ReasonLocalResourceBusy Reason = "local_resource_busy"
 )
 
 // allReasons 是词表闭集本体。校验与测试都从这里取，不另抄一份。
@@ -115,6 +117,7 @@ var allReasons = []Reason{
 	ReasonStreamInterrupted,
 	ReasonGatewayInternalError,
 	ReasonUnclassifiedFailure,
+	ReasonLocalResourceBusy,
 }
 
 // AllReasons 返回 reason 闭集的副本，供校验与测试遍历。
@@ -153,6 +156,7 @@ var reasonRetryPolicy = map[Reason]struct {
 	ReasonCallerCancelled:         {replayable: false},
 	ReasonStreamInterrupted:       {replayable: false},
 	ReasonUnclassifiedFailure:     {replayable: false},
+	ReasonLocalResourceBusy:       {replayable: false},
 }
 
 // Control 是一次终局失败的重试控制事实。响应头与 body 副本都从这一个值派生，
