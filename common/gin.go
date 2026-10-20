@@ -96,13 +96,16 @@ func GetBodyStorage(c *gin.Context) (BodyStorage, error) {
 }
 
 // CleanupBodyStorage 清理请求体存储（应在请求结束时调用）
-func CleanupBodyStorage(c *gin.Context) {
+func CleanupBodyStorage(c *gin.Context) error {
 	if storage, exists := c.Get(KeyBodyStorage); exists && storage != nil {
 		if bs, ok := storage.(BodyStorage); ok {
-			bs.Close()
+			if err := bs.Close(); err != nil {
+				return err
+			}
 		}
 		c.Set(KeyBodyStorage, nil)
 	}
+	return nil
 }
 
 func UnmarshalBodyReusable(c *gin.Context, v any) error {

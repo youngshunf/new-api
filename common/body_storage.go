@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,8 @@ func (m *memoryStorage) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
+		m.data = nil
+		m.reader.Reset(nil)
 		DecrementMemoryBuffers(m.size)
 	}
 	return nil
@@ -121,6 +124,8 @@ type diskStorage struct {
 	filePath string
 	size     int64
 	closed   int32
+	closeErr error
+	removed  bool
 	mu       sync.Mutex
 }
 
@@ -215,11 +220,22 @@ func (d *diskStorage) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&d.closed, 0, 1) {
-		d.file.Close()
-		os.Remove(d.filePath)
-		DecrementDiskFiles(d.size)
+		// 句柄只关闭一次；首次关闭失败必须跨后续显式清理保留。
+		if err := d.file.Close(); err != nil {
+			d.closeErr = fmt.Errorf("关闭请求体缓存文件失败: %w", err)
+		}
 	}
-	return nil
+	var removeErr error
+	if !d.removed {
+		// 已禁止读写不代表文件已移除；失败时保留计数，后续Close只重试移除。
+		if err := os.Remove(d.filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErr = fmt.Errorf("移除请求体缓存文件失败: %w", err)
+		} else {
+			d.removed = true
+			DecrementDiskFiles(d.size)
+		}
+	}
+	return errors.Join(d.closeErr, removeErr)
 }
 
 func (d *diskStorage) Bytes() ([]byte, error) {
@@ -262,11 +278,9 @@ func (d *diskStorage) NewReader() (io.ReadCloser, error) {
 	if atomic.LoadInt32(&d.closed) == 1 {
 		return nil, ErrStorageClosed
 	}
-	// A separate file descriptor over the same cache file: an independent
-	// cursor at zero copy cost. Closing the returned reader closes only that
-	// descriptor; the storage keeps owning the primary descriptor and the
-	// file's lifetime. Readers opened before Close stay usable even after the
-	// file is unlinked, as the descriptor keeps the inode alive.
+	// 独立句柄共享原缓存文件而不复制内容；关闭reader只关闭自身句柄，文件生命周期仍归storage。
+	// Unix移除文件后既有reader通常仍可读；Windows的独立reader可能阻止移除，
+	// 此时storage.Close返回真实错误，待reader关闭后再显式重试移除。
 	file, err := os.Open(d.filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open body cache file for replay: %w", err)

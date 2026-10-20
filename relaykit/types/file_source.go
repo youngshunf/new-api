@@ -153,7 +153,8 @@ type CachedFileData struct {
 	diskPath        string     // 磁盘缓存文件路径（大文件）
 	isDisk          bool       // 是否使用磁盘缓存
 	diskMu          sync.Mutex // 磁盘操作锁（保护磁盘文件的读取和删除）
-	diskClosed      bool       // 是否已关闭/清理
+	diskClosed      bool       // 是否已开始清理并禁止新读
+	diskRemoved     bool       // 磁盘缓存文件是否已移除
 	statDecremented bool       // 是否已扣减统计
 
 	OnClose func(size int64)
@@ -215,18 +216,23 @@ func (c *CachedFileData) Close() error {
 	c.diskMu.Lock()
 	defer c.diskMu.Unlock()
 
-	if c.diskClosed {
+	// 开始清理即禁止新读，移除失败后只允许后续Close重试移除。
+	c.diskClosed = true
+	if c.diskRemoved {
 		return nil
 	}
-
-	c.diskClosed = true
-	if c.diskPath != "" {
-		err := os.Remove(c.diskPath)
-		if err == nil && !c.statDecremented && c.OnClose != nil {
-			c.OnClose(c.DiskSize)
-			c.statDecremented = true
-		}
+	if c.diskPath == "" {
+		c.diskRemoved = true
+		return nil
+	}
+	if err := os.Remove(c.diskPath); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	// 移除完成与统计回调是否存在无关，成功后不得再次删除或扣减。
+	c.diskRemoved = true
+	if !c.statDecremented && c.OnClose != nil {
+		c.OnClose(c.DiskSize)
+		c.statDecremented = true
 	}
 	return nil
 }

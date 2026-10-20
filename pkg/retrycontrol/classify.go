@@ -69,6 +69,7 @@ var taskOnlyPreDispatchErrorCodes = map[string]bool{
 	"build_request_failed":         true, // 步骤 8，紧邻但仍在发送之前
 	"plugin_usage_invalid":         true, // 计费事实提取
 	"plugin_request_invalid":       true, // 插件 decoder 校验
+	"plugin_resource_busy":         true, // 宿主发送前资源准入拒绝
 	"setup_locked_channel_failed":  true, // 锁定渠道重建上下文
 	"channel_not_found":            true,
 	"channel_no_available_key":     true,
@@ -129,6 +130,7 @@ var reasonByErrorCode = map[string]Reason{
 	"rate_limit_exceeded":            ReasonUpstreamRateLimited,
 
 	// 网关自身
+	"plugin_resource_busy":           ReasonLocalResourceBusy,
 	"json_marshal_failed":            ReasonGatewayInternalError,
 	"gen_relay_info_failed":          ReasonGatewayInternalError,
 	"query_data_error":               ReasonGatewayInternalError,
@@ -140,6 +142,7 @@ var reasonByErrorCode = map[string]Reason{
 	"task_insert_failed":             ReasonGatewayInternalError,
 	"task_billing_settlement_failed": ReasonGatewayInternalError,
 	"task_submit_failed":             ReasonGatewayInternalError,
+	"video_generate_cleanup_failed":  ReasonUnclassifiedFailure,
 
 	// 调用方
 	"request_cancelled": ReasonCallerCancelled,

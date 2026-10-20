@@ -212,11 +212,72 @@ function pathFor(action) {
 
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody;
-  const action = actionFor(req);
-  const metadata = req.metadata || {};
+  const canonical = ["generation_mode", "reference_images", "first_frame", "last_frame"].some(function (name) {
+    return Object.prototype.hasOwnProperty.call(req, name);
+  });
+  let action, images;
+  if (canonical) {
+    // 键存在即选择规范形态，禁止混用旧字段或因空值退回历史推断。
+    for (const name of ["mode", "image", "images", "input_reference", "metadata", "action"]) {
+      if (Object.prototype.hasOwnProperty.call(req, name)) throw new Error("canonical request cannot contain " + name);
+    }
+    const hasReferences = Object.prototype.hasOwnProperty.call(req, "reference_images");
+    const hasFirst = Object.prototype.hasOwnProperty.call(req, "first_frame");
+    const hasLast = Object.prototype.hasOwnProperty.call(req, "last_frame");
+    switch (req.generation_mode) {
+      case "text_to_video":
+        if (hasReferences || hasFirst || hasLast) throw new Error("text_to_video forbids image roles");
+        action = "text_to_video";
+        images = null;
+        break;
+      case "reference_to_video":
+        if (hasFirst || hasLast) throw new Error("reference_to_video forbids frame roles");
+        if (!Array.isArray(req.reference_images) || req.reference_images.length < 1 || req.reference_images.length > 16)
+          throw new Error("reference_images must contain 1 to 16 file placeholders");
+        action = "reference_to_video";
+        images = req.reference_images;
+        break;
+      case "first_frame_to_video":
+        if (hasReferences || hasLast) throw new Error("first_frame_to_video forbids reference_images and last_frame");
+        if (!hasFirst) throw new Error("first_frame is required");
+        action = "image_to_video";
+        images = [req.first_frame];
+        break;
+      case "first_last_frame_to_video":
+        if (hasReferences) throw new Error("first_last_frame_to_video forbids reference_images");
+        if (!hasFirst || !hasLast) throw new Error("first_frame and last_frame are required");
+        action = "first_tail_to_video";
+        images = [req.first_frame, req.last_frame];
+        break;
+      default:
+        throw new Error("generation_mode must be an explicit canonical video mode");
+    }
+    const seen = new Set();
+    for (const [index, image] of (images || []).entries()) {
+      // 宿主已准入的内部占位对象仍核封闭形状；此处不替代真实文件/MIME/预算核验。
+      if (!image || typeof image !== "object" || Array.isArray(image)) throw new Error("image role must be a file placeholder");
+      for (const name of Object.keys(image)) {
+        if (!["__fileRef", "encoding", "mimeType", "maxBytes"].includes(name)) throw new Error("invalid image file placeholder field: " + name);
+      }
+      if (typeof image.__fileRef !== "string" || image.encoding !== "dataUrl") throw new Error("invalid image file placeholder");
+      if (seen.has(image.__fileRef)) throw new Error("duplicate image file reference");
+      seen.add(image.__fileRef);
+      const expected = action === "reference_to_video" ? "reference_image_" + index : index === 0 ? "first_frame" : "last_frame";
+      if (image.__fileRef !== "request_file:" + expected) throw new Error("image file reference must match role " + expected);
+      if (!Number.isInteger(image.maxBytes) || image.maxBytes <= 0 || image.maxBytes > 15728640)
+        throw new Error("image file placeholder maxBytes must be between 1 and 15728640");
+      if (image.mimeType !== "image/png" && image.mimeType !== "image/jpeg")
+        throw new Error("image file placeholder mimeType must be image/png or image/jpeg");
+    }
+    if (images) images = images.map(filePlaceholder);
+  } else {
+    action = actionFor(req);
+    images = Array.isArray(req.images) ? req.images.map(filePlaceholder) : null;
+  }
+  const metadata = canonical ? {} : req.metadata || {};
   let model = ctx.upstreamModel || "viduq1";
   if (action === "reference_to_video" && model.includes("viduq2")) model = "viduq2";
-  const images = Array.isArray(req.images) ? req.images.map(filePlaceholder) : null;
+  if (canonical) validateViduCombo(model, outboundDuration(req, model), outboundResolution(req, model), Boolean(images && images.length));
   const body = Object.assign(
     {
       model: model,
@@ -416,6 +477,9 @@ protocols.openai_video = {
       }
       if (req.seconds !== undefined) req.seconds = Number(req.seconds);
       else if (req.duration !== undefined) req.seconds = Number(req.duration);
+    }
+    for (const field of ["generation_mode", "reference_images", "first_frame", "last_frame"]) {
+      if (Object.prototype.hasOwnProperty.call(req, field)) throw new Error("openai_video does not accept canonical field: " + field);
     }
     const model = ctx.upstreamModel || ctx.model || req.model;
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
