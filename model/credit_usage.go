@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"time"
 
@@ -46,6 +47,7 @@ type CreditUsagePage struct {
 
 // CreditUsageDailyEntry 是按本地日聚合的消费。
 type CreditUsageDailyEntry struct {
+	// Day 是响应 timezone 下的日历日，YYYY-MM-DD
 	Day string `json:"day"`
 	// ConsumedCredits 当日消耗积分（正数）
 	ConsumedCredits string `json:"consumed_credits"`
@@ -55,6 +57,8 @@ type CreditUsageDailyEntry struct {
 
 // CreditUsageDaily 是日聚合结果。
 type CreditUsageDaily struct {
+	// Timezone 回显实际分桶所用的 IANA 时区
+	Timezone   string                  `json:"timezone"`
 	Items      []CreditUsageDailyEntry `json:"items"`
 	MeasuredAt string                  `json:"measured_at"`
 }
@@ -62,7 +66,7 @@ type CreditUsageDaily struct {
 const (
 	// creditUsageMaxSize 单页上限，防止一次拉爆内存
 	creditUsageMaxSize = 100
-	// creditUsageDailyMaxDays 日聚合最大跨度，超过直接 400
+	// creditUsageDailyMaxDays 日聚合最大跨度（timezone 下的日历日数），超过直接 400
 	creditUsageDailyMaxDays = 366
 )
 
@@ -131,20 +135,40 @@ func ListCreditUsage(userId int, start, end int64, page, size int) (*CreditUsage
 	}, nil
 }
 
-// SummarizeCreditUsageDaily 按本地日聚合消费。
+// SummarizeCreditUsageDaily 按调用方时区的日历日聚合消费。
 //
-// tzOffsetMinutes 是调用方所在时区相对 UTC 的分钟偏移（如 Asia/Shanghai 为 480）。
-// 日边界由**调用方的时区**决定：把它交给 NewAPI 计算，两侧就不会各切各的日。
-func SummarizeCreditUsageDaily(userId int, start, end int64, tzOffsetMinutes int) (*CreditUsageDaily, error) {
+// timezone 是 IANA 时区名（如 Asia/Shanghai），由本函数用 time.LoadLocation 校验——
+// 统计链上只有这里校验时区名（统一时间设计 §4.4 冻结基线），上游 daemon 与云端只判非空。
+// 每条记录按**它自己那一刻**的历史规则换算日界，不能用查询当下的固定偏移（DST 会错划日期）。
+//
+// start/end 为 Unix 秒、半开区间 [start,end)，0 表示该侧不限；
+// 两侧都给出时按 timezone 下的日历日数限窗。
+func SummarizeCreditUsageDaily(userId int, start, end int64, timezone string) (*CreditUsageDaily, *CreditOperationError) {
 	if userId <= 0 {
-		return nil, fmt.Errorf("newapi_user_id must be a positive integer")
+		return nil, creditError(http.StatusBadRequest, CreditErrorInvalidRequest, false, "newapi_user_id must be a positive integer")
 	}
-	if start > 0 && end > 0 {
-		if days := (end - start) / 86400; days > creditUsageDailyMaxDays {
-			return nil, fmt.Errorf("time range exceeds %d days", creditUsageDailyMaxDays)
+	// 空串在 LoadLocation 里是 UTC、"Local" 是进程所在时区：都不是调用方给出的 IANA 名，直接拒绝，不回落。
+	if timezone == "" || timezone == "Local" {
+		return nil, creditError(http.StatusBadRequest, CreditErrorInvalidRequest, false, "timezone must be an IANA time zone name")
+	}
+	zone, loadErr := time.LoadLocation(timezone)
+	if loadErr != nil {
+		return nil, creditError(http.StatusBadRequest, CreditErrorInvalidRequest, false,
+			"timezone %q is not a known IANA time zone", timezone)
+	}
+	// 限窗数的是 [start,end) 在 timezone 下触及的日历日，不是 (end-start)/86400：
+	// 后者既会放行跨到第 367 个日历日的范围，也受 23/25 小时的 DST 日影响。
+	// 两个 civil 日期都落到 UTC 午夜再相减，UTC 没有 DST，差值恰为整日。
+	if start > 0 && end > start {
+		firstYear, firstMonth, firstDay := time.Unix(start, 0).In(zone).Date()
+		lastYear, lastMonth, lastDay := time.Unix(end-1, 0).In(zone).Date()
+		first := time.Date(firstYear, firstMonth, firstDay, 0, 0, 0, 0, time.UTC)
+		last := time.Date(lastYear, lastMonth, lastDay, 0, 0, 0, 0, time.UTC)
+		if days := int(last.Sub(first).Hours()/24) + 1; days > creditUsageDailyMaxDays {
+			return nil, creditError(http.StatusBadRequest, CreditErrorInvalidRequest, false,
+				"time range covers %d calendar days in %s, exceeds %d", days, timezone, creditUsageDailyMaxDays)
 		}
 	}
-	zone := time.FixedZone("caller", tzOffsetMinutes*60)
 
 	// 同上：每轮重建查询，避免链式条件在同一个 Statement 上累积。
 	batchQuery := func(afterId int) *gorm.DB {
@@ -155,7 +179,7 @@ func SummarizeCreditUsageDaily(userId int, start, end int64, tzOffsetMinutes int
 			q = q.Where("created_at >= ?", start)
 		}
 		if end > 0 {
-			q = q.Where("created_at <= ?", end)
+			q = q.Where("created_at < ?", end)
 		}
 		return q.Order("id asc").Limit(consumptionScanBatch)
 	}
@@ -179,7 +203,7 @@ func SummarizeCreditUsageDaily(userId int, start, end int64, tzOffsetMinutes int
 	for {
 		var rows []usageRow
 		if err := batchQuery(lastId).Scan(&rows).Error; err != nil {
-			return nil, fmt.Errorf("scan usage logs: %w", err)
+			return nil, creditError(http.StatusServiceUnavailable, CreditErrorStoreUnavailable, true, "scan usage logs: %s", err.Error())
 		}
 		if len(rows) == 0 {
 			break
@@ -213,7 +237,7 @@ func SummarizeCreditUsageDaily(userId int, start, end int64, tzOffsetMinutes int
 	// 按日倒序：展示侧总是先看最近的
 	sort.Slice(items, func(i, j int) bool { return items[i].Day > items[j].Day })
 
-	return &CreditUsageDaily{Items: items, MeasuredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+	return &CreditUsageDaily{Timezone: timezone, Items: items, MeasuredAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 
 // fundingSourceOf 从日志 other 取资金来源标记；历史日志没有该字段时返回空串。

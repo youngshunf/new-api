@@ -38,6 +38,9 @@ import (
 	"github.com/joho/godotenv"
 
 	_ "net/http/pprof"
+	// 内嵌 IANA 时区库：计费日统计按 timezone 用 time.LoadLocation 分桶，
+	// 不能依赖运行镜像里有没有 /usr/share/zoneinfo（统一时间设计 §4.4）。
+	_ "time/tzdata"
 )
 
 //go:embed web/dist

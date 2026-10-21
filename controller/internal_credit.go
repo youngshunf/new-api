@@ -194,29 +194,22 @@ func GetCreditUsage(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetCreditUsageDaily 返回按本地日聚合的消费（积分口径）。
+// GetCreditUsageDaily 返回按调用方时区日历日聚合的消费（积分口径）。
 //
-// tz_offset_minutes 由调用方给出（Asia/Shanghai 为 480）：日边界必须由展示时区决定，
-// 否则云端和 NewAPI 会各切各的日，同一笔消费出现在两个不同的日期上。
+// timezone 必填，是 IANA 时区名（如 Asia/Shanghai）：日边界必须由展示时区及每条记录那一刻的
+// 历史规则决定，否则云端和 NewAPI 会各切各的日。时区名只在这里（model 层 LoadLocation）校验，
+// 非法即 400 invalid_request。start/end 为 Unix 秒、半开区间 [start,end)，缺省表示该侧不限。
 //
-// GET /api/internal/v1/credit-usage/{newapi_user_id}/daily?start=&end=&tz_offset_minutes=
+// GET /api/internal/v1/credit-usage/{newapi_user_id}/daily?start=&end=&timezone=
 func GetCreditUsageDaily(c *gin.Context) {
 	userId, ok := parseInternalUserId(c)
 	if !ok {
 		return
 	}
-	tzOffset, err := strconv.Atoi(c.DefaultQuery("tz_offset_minutes", "0"))
-	if err != nil || tzOffset < -720 || tzOffset > 840 {
-		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
-			"tz_offset_minutes must be an integer within [-720, 840]", false)
-		return
-	}
-
-	result, summaryErr := model.SummarizeCreditUsageDaily(userId, parseInt64Query(c, "start"), parseInt64Query(c, "end"), tzOffset)
+	result, summaryErr := model.SummarizeCreditUsageDaily(userId, parseInt64Query(c, "start"), parseInt64Query(c, "end"), c.Query("timezone"))
 	if summaryErr != nil {
-		logger.LogWarn(c, fmt.Sprintf("summarize daily usage failed user=%d: %s", userId, summaryErr.Error()))
-		middleware.AbortWithInternalServiceError(c, http.StatusServiceUnavailable, model.CreditErrorStoreUnavailable,
-			summaryErr.Error(), true)
+		logger.LogWarn(c, fmt.Sprintf("summarize daily usage failed user=%d code=%s: %s", userId, summaryErr.Code, summaryErr.Message))
+		abortWithCreditOperationError(c, summaryErr)
 		return
 	}
 	c.JSON(http.StatusOK, result)
