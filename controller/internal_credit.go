@@ -179,8 +179,14 @@ func GetCreditUsage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	start := parseInt64Query(c, "start")
-	end := parseInt64Query(c, "end")
+	start, ok := parseUnixSecondsQuery(c, "start")
+	if !ok {
+		return
+	}
+	end, ok := parseUnixSecondsQuery(c, "end")
+	if !ok {
+		return
+	}
 	page, _ := strconv.Atoi(c.Query("page"))
 	size, _ := strconv.Atoi(c.Query("size"))
 
@@ -206,7 +212,15 @@ func GetCreditUsageDaily(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result, summaryErr := model.SummarizeCreditUsageDaily(userId, parseInt64Query(c, "start"), parseInt64Query(c, "end"), c.Query("timezone"))
+	start, ok := parseUnixSecondsQuery(c, "start")
+	if !ok {
+		return
+	}
+	end, ok := parseUnixSecondsQuery(c, "end")
+	if !ok {
+		return
+	}
+	result, summaryErr := model.SummarizeCreditUsageDaily(userId, start, end, c.Query("timezone"))
 	if summaryErr != nil {
 		logger.LogWarn(c, fmt.Sprintf("summarize daily usage failed user=%d code=%s: %s", userId, summaryErr.Code, summaryErr.Message))
 		abortWithCreditOperationError(c, summaryErr)
@@ -226,11 +240,19 @@ func parseInternalUserId(c *gin.Context) (int, bool) {
 	return userId, true
 }
 
-// parseInt64Query 读可选的 Unix 秒查询参数；缺失或非法一律按 0（不限）处理。
-func parseInt64Query(c *gin.Context, key string) int64 {
-	value, err := strconv.ParseInt(strings.TrimSpace(c.Query(key)), 10, 64)
-	if err != nil || value < 0 {
-		return 0
+// parseUnixSecondsQuery 读可选的 Unix 秒查询参数：缺失或空串按 0（该侧不限）；
+// 给了却不是合法的非负十进制整数时，已经写好 400 invalid_request 并返回 false——
+// 不得静默当成「不限」，否则调用方拿到的是错误范围的统计。
+func parseUnixSecondsQuery(c *gin.Context, key string) (int64, bool) {
+	raw := c.Query(key)
+	if raw == "" {
+		return 0, true
 	}
-	return value
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.CreditErrorInvalidRequest,
+			fmt.Sprintf("%s must be a non-negative integer of Unix seconds", key), false)
+		return 0, false
+	}
+	return value, true
 }
