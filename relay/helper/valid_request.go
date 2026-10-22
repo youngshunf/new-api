@@ -203,6 +203,8 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			}
 			imageRequest.Quality = formData.Get("quality")
 			imageRequest.Size = formData.Get("size")
+			// 与 JSON 分支一致交给渠道适配：阿里等渠道只在 b64_json 时把结果 URL 转成 b64
+			imageRequest.ResponseFormat = formData.Get("response_format")
 			if streamValue := strings.TrimSpace(formData.Get("stream")); streamValue != "" {
 				stream, err := strconv.ParseBool(streamValue)
 				if err != nil {

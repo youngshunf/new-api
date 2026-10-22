@@ -72,6 +72,34 @@ func TestGetAndValidOpenAIImageRequestMultipartStream(t *testing.T) {
 	})
 }
 
+// TestGetAndValidOpenAIImageRequestMultipartResponseFormat 守住 multipart 图生图与 JSON 文生图
+// 同样把客户端要求的 response_format 交给渠道适配：阿里等渠道只在 b64_json 时把结果 URL 转成
+// b64，丢了这个字段就只回 URL，要 b64 的调用方只能拒收已扣费的结果。
+func TestGetAndValidOpenAIImageRequestMultipartResponseFormat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, format := range []string{"b64_json", "url", ""} {
+		t.Run("response_format="+format, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			require.NoError(t, writer.WriteField("model", "qwen-image-2.1-pro"))
+			require.NoError(t, writer.WriteField("prompt", "edit this image"))
+			if format != "" {
+				require.NoError(t, writer.WriteField("response_format", format))
+			}
+			require.NoError(t, writer.Close())
+
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+			c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+
+			req, err := GetAndValidOpenAIImageRequest(c, relayconstant.RelayModeImagesEdits)
+			require.NoError(t, err)
+			require.Equal(t, format, req.ResponseFormat)
+		})
+	}
+}
+
 // TestGetAndValidOpenAIImageRequestNBounds guards the billing invariant that
 // the image generation count can never reach quota calculation with a value
 // large enough to overflow int64 into a negative charge.
