@@ -283,6 +283,67 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 	assert.NotContains(t, body, "second")
 }
 
+// 心跳见证器只观察真实响应写入；不替换扫描器或定时器。
+type pingWitnessWriter struct {
+	*httptest.ResponseRecorder
+	ping chan struct{}
+	once sync.Once
+}
+
+func (w *pingWitnessWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(body)
+	if err == nil && strings.HasPrefix(string(body), ": PING\n\n") {
+		w.once.Do(func() { close(w.ping) })
+	}
+	return n, err
+}
+
+func TestStreamScannerHandler_DefaultHeartbeatKeepsSilentInferenceAlive(t *testing.T) {
+	// 只缩短测试时钟量纲，不手工开启心跳；承重的是生产默认行为。
+	setting := operation_setting.GetGeneralSetting()
+	oldSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalSeconds = 1
+	t.Cleanup(func() { setting.PingIntervalSeconds = oldSeconds })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	recorder := &pingWitnessWriter{ResponseRecorder: httptest.NewRecorder(), ping: make(chan struct{})}
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+	var modelFrames atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, &http.Response{Body: reader}, info, func(data string, result *StreamResult) {
+			modelFrames.Add(1)
+		})
+		close(done)
+	}()
+
+	receivedPing := false
+	select {
+	case <-recorder.ping:
+		receivedPing = true
+		_, err := io.WriteString(writer, "data: [DONE]\n\n")
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		cancel()
+	}
+	require.NoError(t, writer.Close())
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("结束或取消后必须释放扫描器与心跳任务")
+	}
+	require.True(t, receivedPing, "默认配置必须在模型无正文时发送心跳，避免下游读空闲误杀")
+	assert.Contains(t, recorder.Body.String(), ": PING\n\n")
+	assert.Equal(t, int64(0), modelFrames.Load(), "心跳不能冒充模型正文或工具调用")
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+}
+
 // ---------- Ping tests ----------
 
 func TestStreamScannerHandler_PingSentDuringSlowUpstream(t *testing.T) {

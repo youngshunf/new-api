@@ -24,9 +24,10 @@ type GeneralSetting struct {
 
 // 默认配置
 var generalSetting = GeneralSetting{
-	DocsLink:                   "https://docs.newapi.pro",
-	PingIntervalEnabled:        false,
-	PingIntervalSeconds:        60,
+	DocsLink: "https://docs.newapi.pro",
+	// 只在活动 SSE 推理期间发注释心跳，避免模型思考超过下游读空闲预算时被误判断流。
+	PingIntervalEnabled:        true,
+	PingIntervalSeconds:        10,
 	QuotaDisplayType:           QuotaDisplayTypeUSD,
 	CustomCurrencySymbol:       "¤",
 	CustomCurrencyExchangeRate: 1.0,
