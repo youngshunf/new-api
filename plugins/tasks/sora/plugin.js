@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -167,8 +167,33 @@ export function listArtifacts(task) {
   return task.status === "SUCCESS" ? [{ key: "video", type: "video" }] : [];
 }
 
+// agnes 走 Sora 方言却不实现 /v1/videos/{id}/content：其查询快照只给 video_id、不给 url，
+// 出片地址要按 video_id 问自家端点 GET {base}/agnesapi?video_id=<id>，响应顶层 url 即出片。
+// 快照已带 url 就直接用。真 Sora 不返回 video_id；New API 网关上游由它自己的 sora 插件取片。两者都仍走 /content。
+function agnesVideoURL(ctx) {
+  const data = ctx.data && typeof ctx.data === "object" && !Array.isArray(ctx.data) ? ctx.data : {};
+  const videoID = trimmed(data.video_id);
+  if (!videoID || (ctx.upstream && ctx.upstream.kind === "new_api")) return "";
+  let url = trimmed(data.url);
+  if (!url) {
+    const response = utils.fetch({
+      url: ctx.baseUrl + "/agnesapi?video_id=" + encodeURIComponent(videoID),
+      headers: { Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
+    });
+    if (response.status !== 200 || !response.body || typeof response.body !== "object") {
+      throw new Error("agnes video lookup failed: HTTP " + response.status);
+    }
+    url = trimmed(response.body.url);
+  }
+  if (!/^https?:\/\//i.test(url)) throw new Error("artifact_not_found");
+  return url;
+}
+
 export function buildContentRequest(ctx) {
   if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
+  const agnesURL = agnesVideoURL(ctx);
+  // 出片地址可能是只签了 GET 的对象存储链接；HEAD 客户端同样发 GET，宿主只回响应头。
+  if (agnesURL) return { url: agnesURL, method: "GET", credentialless: true };
   return {
     url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content",
     method: ctx.clientRequest.method,
