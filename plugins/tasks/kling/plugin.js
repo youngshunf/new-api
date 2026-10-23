@@ -7,19 +7,18 @@ export const meta = {
     en: "Kuaishou Kling video generation (text-to-video and image-to-video)",
     zh: "快手可灵视频生成（文生视频、图生视频）",
   },
-  version: "1.0.1",
+  version: "1.1.1",
   author: { name: "QuantumNous" },
   channelTypes: [50],
   models: ["kling-v1", "kling-v1-6", "kling-v2-master"],
   fetchMode: "per_task",
+  upstreams: ["vendor", "new_api"],
   usageSchema: {
+    // Kling final unit deduction (estimated at submit, actual on completion).
     units: {
       type: "number",
       unit: "credit",
-      description: {
-        en: "Kling final unit deduction (estimated at submit, actual on completion).",
-        zh: "可灵最终单位消耗（提交时预估，完成后按实际值）。",
-      },
+      description: { en: "Kling credit unit price", zh: "可灵资源包单位单价" },
     },
   },
   usageExamples: [
@@ -100,9 +99,18 @@ function isRelay(apiKey) {
   return apiKey.startsWith("sk-");
 }
 
-function tokenFor(apiKey) {
-  if (isRelay(apiKey)) return apiKey;
+// The host signal is authoritative on New API channels; the sk- key prefix
+// stays as the heuristic for legacy type-50 channels pointed at a gateway.
+function viaGateway(ctx) {
+  return !!(ctx.upstream && ctx.upstream.kind === "new_api") || isRelay(ctx.apiKey);
+}
+
+function tokenFor(ctx) {
+  const apiKey = trimmed(ctx.apiKey);
+  if (!apiKey) throw new Error("api_key is empty");
+  if (viaGateway(ctx)) return apiKey;
   const parts = apiKey.split("|");
+  if (parts.length === 1) return apiKey;
   if (parts.length !== 2) throw new Error("invalid api_key, required format is accessKey|secretKey");
   const now = utils.unixNow();
   return utils.jwtSignHS256({ iss: parts[0].trim(), exp: now + 1800, nbf: now - 5 }, parts[1].trim());
@@ -112,8 +120,8 @@ function pathFor(action) {
   return action === "image_to_video" ? "/v1/videos/image2video" : "/v1/videos/text2video";
 }
 
-function urlFor(baseUrl, apiKey, action) {
-  return baseUrl + (isRelay(apiKey) ? "/kling" : "") + pathFor(action);
+function urlFor(ctx, action) {
+  return ctx.baseUrl + (viaGateway(ctx) ? "/kling" : "") + pathFor(action);
 }
 
 function aspectRatio(size) {
@@ -157,13 +165,14 @@ function validateKlingDuration(value) {
   return n;
 }
 
+// The duration Kling receives and the one billed: metadata.duration (the whole
+// body on native routes) overrides the top-level duration, which defaults to 5.
 function outboundDuration(req) {
-  const n = Number(req && req.duration);
-  if (Number.isFinite(n) && n > 0) return n;
   const metadata = (req && req.metadata) || {};
-  const fromMeta = Number(metadata.duration);
-  if (Number.isFinite(fromMeta) && fromMeta > 0) return fromMeta;
-  return 5;
+  let value = metadata.duration;
+  if (value === undefined || value === null) value = req && req.duration;
+  if (value === undefined || value === null) return 5;
+  return validateKlingDuration(value);
 }
 
 function outboundMode(req, model) {
@@ -236,7 +245,6 @@ export function buildSubmitRequest(ctx) {
       prompt: req.prompt,
       image: req.image,
       mode: outboundMode(req, model),
-      duration: String(req.duration || 5),
       aspect_ratio: aspectRatio(req.size),
       model_name: model,
       model: model,
@@ -245,14 +253,15 @@ export function buildSubmitRequest(ctx) {
     metadata
   );
   body.mode = outboundMode({ mode: body.mode, metadata: metadata }, model);
+  body.duration = String(outboundDuration(req));
   if (body.image) body.image = filePlaceholder(body.image);
   if (body.image_tail) body.image_tail = filePlaceholder(body.image_tail);
   if (!body.prompt) delete body.prompt;
   if (!body.image) delete body.image;
   return {
-    url: urlFor(ctx.baseUrl, ctx.apiKey, action),
+    url: urlFor(ctx, action),
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + tokenFor(ctx.apiKey), "User-Agent": "kling-sdk/1.0" },
+    headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + tokenFor(ctx), "User-Agent": "kling-sdk/1.0" },
     body: body,
     action: action,
   };
@@ -276,9 +285,9 @@ export function extractUsage(ctx) {
 
 export function buildQueryRequest(ctx) {
   return {
-    url: urlFor(ctx.baseUrl, ctx.apiKey, ctx.action) + "/" + ctx.taskId,
+    url: urlFor(ctx, ctx.action) + "/" + ctx.taskId,
     method: "GET",
-    headers: { Accept: "application/json", Authorization: "Bearer " + tokenFor(ctx.apiKey), "User-Agent": "kling-sdk/1.0" },
+    headers: { Accept: "application/json", Authorization: "Bearer " + tokenFor(ctx), "User-Agent": "kling-sdk/1.0" },
   };
 }
 

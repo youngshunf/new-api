@@ -13,6 +13,7 @@ var ModelList = []string{
 	"qwen-audio-3.0-tts-flash",
 	"qwen-audio-3.0-tts-plus",
 	"text-embedding-v1",
+	"qwen3-vl-embedding",
 	"gte-rerank-v2",
 }
 

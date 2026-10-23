@@ -162,7 +162,7 @@ func CreateVoice(c *gin.Context) {
 	other.SetPublic("operation", "audio.voice_create")
 	other.SetPublic("target_model", request.Model)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{ChannelId: info.ChannelId, ModelName: "voice-enrollment", TokenName: c.GetString("token_name"),
-		Quota: info.PriceData.Quota, TokenId: info.TokenId, Group: info.UsingGroup, Content: "音色建档", Other: other})
+		Quota: info.PriceData.Quota, TokenId: info.TokenId, Group: info.UsingGroup, Content: []*common.Message{common.NewMessage("Voice enrollment")}, Other: other})
 	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
 	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
 	if request.Kind == "design" {

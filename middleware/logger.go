@@ -36,6 +36,11 @@ func SetUpLogger(server *gin.Engine) {
 		if strings.EqualFold(pathOnly, materialRoute) || strings.HasPrefix(strings.ToLower(pathOnly), materialRoute+"/") {
 			path = materialRoute + "/:token"
 		}
+		// OAuth callbacks carry one-time codes and state in the query string.
+		// Redact the log value only; the handler still needs the original query.
+		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+			path = pathOnly
+		}
 		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",
 			param.TimeStamp.Format("2006/01/02 - 15:04:05"),
 			tag,

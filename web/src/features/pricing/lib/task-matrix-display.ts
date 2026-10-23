@@ -17,7 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { BillingUsageSchema } from '../types'
-import type { ParsedTaskTier } from './billing-expr'
+import {
+  parseTaskTiersFromExpr,
+  splitBillingExprAndRequestRules,
+  type ParsedTaskTier,
+  type TaskTierCondition,
+} from './billing-expr'
+import { readConditionalTaskPricing } from './billing-expression/task-display'
 import {
   getTaskEnumFields,
   taskMatrixRowLabel,
@@ -48,4 +54,79 @@ export function getTaskMatrixDisplayTiers(
     constant: row.constant,
     unitPrices: { ...row.unitPrices },
   }))
+}
+
+/** A usage price that is zero in every tier is left out while another usage
+ * price is set, so a plugin field the model does not bill on is not listed as
+ * free. A model priced at zero throughout keeps its zero prices.
+ */
+export function getTaskPricingDisplayTiers(
+  expression: string | null | undefined,
+  schema: BillingUsageSchema | null | undefined
+): ParsedTaskTier[] {
+  const tiers = readTaskPricingTiers(expression, schema)
+  const pricedFields = new Set(
+    tiers.flatMap((tier) =>
+      Object.keys(tier.unitPrices).filter((field) => tier.unitPrices[field] > 0)
+    )
+  )
+  if (pricedFields.size === 0) return tiers
+  return tiers.map((tier) => ({
+    ...tier,
+    unitPrices: Object.fromEntries(
+      Object.entries(tier.unitPrices).filter(([field]) =>
+        pricedFields.has(field)
+      )
+    ),
+  }))
+}
+
+/** Display explicit conditions for a fallback only when its complement is unique.
+ * Unlike the editor matrix, unrelated schema fields do not expand the price table.
+ */
+function readTaskPricingTiers(
+  expression: string | null | undefined,
+  schema: BillingUsageSchema | null | undefined
+): ParsedTaskTier[] {
+  const tiers = parseTaskTiersFromExpr(expression || '', schema, true)
+  if (tiers.length === 0 && expression && schema) {
+    const { billingExpr } = splitBillingExprAndRequestRules(expression)
+    return readConditionalTaskPricing(billingExpr, schema) ?? []
+  }
+  const fallback = tiers.at(-1)
+  if (!schema || tiers.length < 2 || !fallback) return tiers
+  const previous = tiers.slice(0, -1)
+  const fields = [
+    ...new Set(
+      previous.flatMap((tier) =>
+        tier.conditions.map((condition) => condition.field)
+      )
+    ),
+  ].sort()
+  let combinations: TaskTierCondition[][] = [[]]
+  for (const field of fields) {
+    const definition = schema[field]
+    const values =
+      definition?.type === 'boolean' ? ['false', 'true'] : definition?.enum
+    // Avoid expanding large plugin schemas merely to name a fallback row.
+    if (!values?.length || combinations.length * values.length > 256) {
+      return tiers
+    }
+    combinations = combinations.flatMap((combination) =>
+      values.map((value) => [...combination, { field, value }])
+    )
+  }
+  const remaining = combinations.filter(
+    (combination) =>
+      !previous.some((tier) =>
+        tier.conditions.every((condition) =>
+          combination.some(
+            (value) =>
+              value.field === condition.field && value.value === condition.value
+          )
+        )
+      )
+  )
+  if (remaining.length !== 1) return tiers
+  return [...previous, { ...fallback, conditions: remaining[0] }]
 }

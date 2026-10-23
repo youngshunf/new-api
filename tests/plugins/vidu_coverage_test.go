@@ -12,10 +12,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Calcium-Ion/moejs"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	builtinplugins "github.com/QuantumNous/new-api/plugins"
-	"github.com/grafana/sobek"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,7 +147,7 @@ func (e *viduTestEngine) collectHookCoverage(ctx context.Context, hook string, i
 	before := e.events
 	e.calls++
 	value, err := invoke()
-	var interrupted *sobek.InterruptedError
+	var interrupted *moejs.InterruptedError
 	if e.events != before+1 || errors.As(err, &interrupted) || ctx.Err() != nil {
 		e.incomplete = true
 		e.t.Error("覆盖不完整：目标调用未产生恰好一次同步快照或执行已中断")

@@ -8,6 +8,7 @@ import (
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -233,5 +234,16 @@ func TestUpstreamRequestIDFromHeadersSupportsStandardAliases(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			require.Equal(t, testCase.expected, upstreamRequestIDFromHeaders(testCase.headers))
 		})
+	}
+}
+
+func TestToWebSocketURL(t *testing.T) {
+	for input, want := range map[string]string{
+		"https://api.openai.com/v1/responses":             "wss://api.openai.com/v1/responses",
+		"http://127.0.0.1:3000/v1/responses":              "ws://127.0.0.1:3000/v1/responses",
+		"wss://chatgpt.com/backend-api/codex/responses":   "wss://chatgpt.com/backend-api/codex/responses",
+		"ws://127.0.0.1:3000/backend-api/codex/responses": "ws://127.0.0.1:3000/backend-api/codex/responses",
+	} {
+		assert.Equal(t, want, toWebSocketURL(input), input)
 	}
 }

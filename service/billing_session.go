@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
@@ -72,7 +75,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		}
 		if tokenErr != nil {
 			// 资金来源已提交，令牌调整失败只能记录日志；标记 settled 防止 Refund 误退资金
-			common.SysLog(fmt.Sprintf("error adjusting token quota after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
+			common.SysLog(common.LogText("error adjusting token quota after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
 				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
 		}
 	}
@@ -141,10 +144,23 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 }
 
 func (s *BillingSession) Reserve(targetQuota int) error {
+	return s.reserve(targetQuota, false)
+}
+
+// ReserveBeforeSubmit 在发起上游请求前补扣，钱包余额必须覆盖差额。
+func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
+	return s.reserve(targetQuota, true)
+}
+
+func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.settled || s.refunded || s.trusted || targetQuota <= s.preConsumedQuota {
+	if s.relayInfo != nil {
+		_, imageRequest := s.relayInfo.Request.(*dto.ImageRequest)
+		requireAvailableQuota = requireAvailableQuota || imageRequest || s.relayInfo.ImageRequestCount > 0
+	}
+	if s.settled || s.refunded || s.trusted && !requireAvailableQuota || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -163,6 +179,10 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
+	if requireAvailableQuota {
+		// 已按确定价格真实预扣，后续结算不能再按信任旁路处理。
+		s.trusted = false
+	}
 	s.syncRelayInfo()
 	return nil
 }
@@ -198,7 +218,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		// 预扣费失败，回滚令牌额度
 		if s.tokenConsumed > 0 && !s.relayInfo.IsPlayground {
 			if rollbackErr := model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, s.tokenConsumed); rollbackErr != nil {
-				common.SysLog(fmt.Sprintf("error rolling back token quota (userId=%d, tokenId=%d, amount=%d, fundingErr=%s): %s",
+				common.SysLog(common.LogText("error rolling back token quota (userId=%d, tokenId=%d, amount=%d, fundingErr=%s): %s",
 					s.relayInfo.UserId, s.relayInfo.TokenId, s.tokenConsumed, err.Error(), rollbackErr.Error()))
 			}
 			s.tokenConsumed = 0
@@ -266,15 +286,16 @@ func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 	if s.relayInfo.ForcePreConsume {
 		return false
 	}
-	trustQuota := common.GetTrustQuota()
-	if trustQuota <= 0 {
+
+	trustQuota := operation_setting.GetQuotaSetting().TrustQuotaUSD * common.QuotaPerUnit
+	if trustQuota <= 0 || math.IsNaN(trustQuota) || math.IsInf(trustQuota, 0) {
 		return false
 	}
 	// 检查令牌是否充足
 	tokenTrusted := s.relayInfo.TokenUnlimited
 	if !tokenTrusted {
 		tokenQuota := c.GetInt("token_quota")
-		tokenTrusted = tokenQuota > trustQuota
+		tokenTrusted = float64(tokenQuota) > trustQuota
 	}
 	if !tokenTrusted {
 		return false
@@ -285,7 +306,7 @@ func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 			return false
 		}
 	}
-	return s.relayInfo.UserQuota > trustQuota
+	return float64(s.relayInfo.UserQuota) > trustQuota
 }
 
 // syncRelayInfo 将 BillingSession 的状态同步到 RelayInfo 的日志字段上。
