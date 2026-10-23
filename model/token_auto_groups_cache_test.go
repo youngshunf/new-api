@@ -30,6 +30,20 @@ func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
 	assert.Equal(t, []string{"vip", "default"}, groups)
 }
 
+func TestTokenAllowUserQuotaQueryRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	// 本 fork 的缓存读取要求完整用途/记账模式快照，残缺快照会回落数据库。
+	token := Token{Id: 43, UserId: 7, Key: "token-user-quota-cache-key", Name: "user-quota-cache", AllowUserQuotaQuery: true, Purpose: "generic", AccountingMode: "legacy"}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.True(t, cached.AllowUserQuotaQuery)
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
+}
+
 func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)

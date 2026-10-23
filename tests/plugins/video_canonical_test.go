@@ -304,9 +304,7 @@ func TestViduLegacyVideoHookUnchanged(t *testing.T) {
 			if override, exists := testCase.metadata["images"]; exists {
 				expectedImages = override
 			}
-			if override, exists := testCase.metadata["model"]; exists {
-				expectedModel = override.(string)
-			}
+			// 上游已收紧：metadata 只能带 Vidu 其它字段，不能改写计费模型、时长与分辨率。
 			expected, err := common.Marshal(expectedImages)
 			require.NoError(t, err)
 			actual, err := common.Marshal(descriptor.Body["images"])
