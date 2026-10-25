@@ -124,3 +124,87 @@ func loadSoraPlugin(t *testing.T) *jsplugin.LoadedPlugin {
 	require.NoError(t, err)
 	return plugin
 }
+
+// agnes 视频走 Sora 方言的 /v1/videos，但上游要求 mode 必填、seconds 为字符串、size 只收档位；
+// 像素尺寸改写为 aspect_ratio。真 Sora 与 New API 网关上游原样透传。
+func TestSoraSubmitAgnesVideoDialect(t *testing.T) {
+	plugin := loadSoraPlugin(t)
+	submit := func(t *testing.T, ctx map[string]any) (map[string]any, error) {
+		t.Helper()
+		ctx["baseUrl"] = "https://api.agnes.example"
+		ctx["apiKey"] = "agnes-key"
+		value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := common.Marshal(value)
+		require.NoError(t, err)
+		var descriptor map[string]any
+		require.NoError(t, common.Unmarshal(encoded, &descriptor))
+		return descriptor, nil
+	}
+	body := func(t *testing.T, descriptor map[string]any) map[string]any {
+		t.Helper()
+		value, ok := descriptor["body"].(map[string]any)
+		require.True(t, ok, "descriptor body must be a JSON object: %v", descriptor)
+		return value
+	}
+
+	t.Run("agnes text adds mode and stringifies seconds", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5-flash",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5-flash", "prompt": "海浪", "seconds": 8},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.agnes.example/v1/videos", descriptor["url"])
+		assert.Equal(t, map[string]any{"model": "agnes-video-2.5-flash", "prompt": "海浪", "mode": "text", "seconds": "8"}, body(t, descriptor))
+	})
+	t.Run("agnes pixel size becomes aspect ratio", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "seconds": "4", "size": "720x1280"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "seconds": "4", "aspect_ratio": "9:16"}, body(t, descriptor))
+	})
+	t.Run("agnes tier size and explicit mode pass through, omitted seconds sends billed default", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "size": "1080P"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "seconds": "4", "size": "1080P"}, body(t, descriptor))
+	})
+	t.Run("agnes unknown pixel size is rejected before dispatch", func(t *testing.T) {
+		_, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "size": "1234x567"},
+		})
+		require.ErrorContains(t, err, "agnes video does not support size 1234x567")
+	})
+	t.Run("agnes first frame file is rejected before dispatch", func(t *testing.T) {
+		_, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪"},
+			"files":         []any{map[string]any{"field": "input_reference", "ref": "f0", "filename": "a.png"}},
+		})
+		require.ErrorContains(t, err, "agnes video only supports text mode")
+	})
+	t.Run("real sora passes through unchanged", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "sora-2",
+			"requestBody":   map[string]any{"model": "sora-2", "prompt": "海浪", "seconds": 8, "size": "1280x720"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"model": "sora-2", "prompt": "海浪", "seconds": float64(8), "size": "1280x720"}, body(t, descriptor))
+	})
+	t.Run("new api gateway upstream passes through unchanged", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"upstream":      map[string]any{"kind": "new_api"},
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "seconds": 8},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "seconds": float64(8)}, body(t, descriptor))
+	})
+}

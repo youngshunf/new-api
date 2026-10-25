@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.1",
+  version: "1.1.2",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -86,6 +86,40 @@ function responsesVideoText(ctx) {
   return '<video controls src="' + escaped + '"></video>';
 }
 
+// agnes 视频模型族（上游模型名前缀，供应商文档的产品族事实）走 Sora 方言的 /v1/videos，但请求体有三处不同：
+// `mode` 必填（本插件只承接纯文生 `text`；首尾帧与参考生成要公网 URL，不收 multipart 文件）、`seconds` 只收字符串、
+// `size` 只收 `720P` 等档位而不收像素尺寸（画幅另由 `aspect_ratio` 表达）。真 Sora 与 New API 网关上游不受影响。
+const AGNES_VIDEO_PREFIX = "agnes-video";
+const AGNES_BILLED_DEFAULT_SECONDS = 4;
+const AGNES_ASPECT_BY_SIZE = {
+  "1280x720": "16:9",
+  "720x1280": "9:16",
+  "1792x1024": "16:9",
+  "1024x1792": "9:16",
+  "1024x1024": "1:1",
+  "960x960": "1:1",
+};
+
+function isAgnesVideo(ctx, model) {
+  if (ctx.upstream && ctx.upstream.kind === "new_api") return false;
+  return String(model || "").toLowerCase().startsWith(AGNES_VIDEO_PREFIX);
+}
+
+function agnesValues(values, hasFiles) {
+  if (hasFiles || values.input_reference || values.image) throw new Error("agnes video only supports text mode via this plugin");
+  if (values.mode === undefined) values.mode = "text";
+  // 计费按 extractUsage 的请求时长（缺省 4 秒）预扣；agnes 自身缺省 5 秒，缺省时显式发送计费时长，出片与计费一致。
+  values.seconds = String(values.seconds === undefined ? AGNES_BILLED_DEFAULT_SECONDS : values.seconds);
+  const size = trimmed(values.size);
+  if (size && /^\d+x\d+$/.test(size)) {
+    const aspect = AGNES_ASPECT_BY_SIZE[size];
+    if (!aspect) throw new Error("agnes video does not support size " + size);
+    if (values.aspect_ratio === undefined) values.aspect_ratio = aspect;
+    delete values.size;
+  }
+  return values;
+}
+
 function requestValues(req, model) {
   const values = Object.assign({}, req || {});
   values.model = model;
@@ -100,6 +134,10 @@ export function buildSubmitRequest(ctx) {
   if (action === "remix") {
     headers["Content-Type"] = "application/json";
     return { url: ctx.baseUrl + "/v1/videos/" + ctx.originTaskId + "/remix", method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
+  }
+  if (isAgnesVideo(ctx, ctx.upstreamModel)) {
+    headers["Content-Type"] = "application/json";
+    return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, body: agnesValues(requestValues(req, ctx.upstreamModel), (ctx.files || []).length > 0) };
   }
   if ((ctx.files || []).length) {
     const parts = [];
