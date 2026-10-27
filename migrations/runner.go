@@ -211,6 +211,10 @@ func verifyTargetSchema(db *gorm.DB) error {
 			return fmt.Errorf("缺少目标列：tokens.%s", name)
 		}
 	}
+	// V005：上游令牌列，账本建立后只能由正式迁移补（AutoMigrate 不再碰 tokens）。
+	if !db.Migrator().HasColumn("tokens", "allow_user_quota_query") {
+		return fmt.Errorf("缺少目标列：tokens.allow_user_quota_query")
+	}
 	return nil
 }
 

@@ -307,3 +307,34 @@ func TestFormalMigrationDoesNotRecordLedgerAfterSchemaFailure(t *testing.T) {
 	}
 	assert.Zero(t, count, "schema形状失败时不得登记已完成迁移")
 }
+
+// 正式账本建立之后 tokens 不再走 AutoMigrate（model/main.go），上游给 Token 新加的列只能由正式迁移补；
+// 否则管理台保存令牌报 `column "allow_user_quota_query" does not exist`（llm-dev 2026-10-27）。
+func TestFormalMigrationAddsUpstreamTokenColumnsAfterLedger(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/ledger.db"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&token884fBaseline{}))
+	require.NoError(t, migrations.Apply(db))
+	require.NoError(t, migrations.Apply(db), "第二次启动必须幂等")
+	require.NoError(t, migrations.Verify(db))
+	// 上游每给 Token 加一列，这里就逼着补一条正式迁移，而不是等管理台保存时报列不存在。
+	statement := &gorm.Statement{DB: db}
+	require.NoError(t, statement.Parse(&model.Token{}))
+	for _, field := range statement.Schema.Fields {
+		if field.DBName == "" {
+			continue
+		}
+		assert.True(t, db.Migrator().HasColumn("tokens", field.DBName), "正式迁移后缺少 Token 模型列 tokens.%s", field.DBName)
+	}
+
+	require.NoError(t, db.Table("tokens").Create(map[string]any{"id": 140001, "user_id": 1, "key": "tk_quota_query_old"}).Error)
+	var allowed []bool
+	require.NoError(t, db.Table("tokens").Where("id = ?", 140001).Pluck("COALESCE(allow_user_quota_query, false)", &allowed).Error)
+	assert.Equal(t, []bool{false}, allowed, "已有令牌保持关闭")
+	require.NoError(t, db.Table("tokens").Where("id = ?", 140001).Update("allow_user_quota_query", true).Error)
+	require.NoError(t, db.Table("tokens").Where("id = ?", 140001).Pluck("allow_user_quota_query", &allowed).Error)
+	assert.Equal(t, []bool{true}, allowed)
+
+	require.NoError(t, db.Exec("ALTER TABLE tokens DROP COLUMN allow_user_quota_query").Error)
+	assert.Error(t, migrations.Verify(db), "缺这一列时只读启动门必须拒绝")
+}
