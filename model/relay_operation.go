@@ -2,11 +2,12 @@ package model
 
 import "errors"
 
-// IsRelayOperation 接受与通用模型用途合同一致的闭集，不为Speech另开purpose。
+// IsRelayOperation 接受与通用模型用途合同一致的闭集，不为Speech另开purpose；web.search 是节点联网搜索工具（HExt-10 07）。
 func IsRelayOperation(operation string) bool {
 	switch operation {
 	case "chat.completions", "vision", "responses", "messages", "embedding", "rerank", "image.generate", "image.edit",
-		"audio.transcribe", "audio.translate", "audio.tts", "video.generate", "audio.voice_create", "audio.voice_query", "audio.voice_delete":
+		"audio.transcribe", "audio.translate", "audio.tts", "video.generate", "audio.voice_create", "audio.voice_query", "audio.voice_delete",
+		"web.search":
 		return true
 	default:
 		return false

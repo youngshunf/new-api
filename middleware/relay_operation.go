@@ -26,6 +26,8 @@ var operationRoutes = map[string][]string{
 	"audio.voice_query":  {"GET /v1/audio/voices", "GET /v1/audio/voices/:voice_ref", "GET /v1/audio/voices/:voice_ref/preview"},
 	"audio.voice_delete": {"DELETE /v1/audio/voices/:voice_ref"},
 	"video.generate":     {"POST /v1/videos", "POST /v1/video/generations", "GET /v1/videos/:task_id", "GET /v1/videos/:task_id/content", "GET /v1/video/generations/:task_id"},
+	// 节点网页抓取在本机执行，搜索租约不放行 /v1/tools/fetch。
+	"web.search": {"POST /v1/tools/search"},
 }
 
 func authorizeTokenOperation(c *gin.Context, token *model.Token) error {

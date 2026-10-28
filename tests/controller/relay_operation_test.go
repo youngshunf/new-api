@@ -193,3 +193,33 @@ func TestPinnedChannelCannotBypassOrdinaryCallModelLimit(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, response.StatusCode)
 	assert.False(t, visited, "pin不得跳过组与单模型交集")
 }
+
+// web.search 租约只到达 /v1/tools/search；抓取、对话等其它路由在消费者之前拒绝。
+func TestWebSearchLeaseOnlyReachesToolsSearch(t *testing.T) {
+	_, engine, server := setupOrdinaryCallHTTP(t)
+	visited := 0
+	consumer := func(c *gin.Context) { visited++; c.Status(http.StatusNoContent) }
+	engine.POST("/v1/tools/search", middleware.TokenAuth(), consumer)
+	engine.POST("/v1/tools/fetch", middleware.TokenAuth(), consumer)
+	engine.POST("/v1/chat/completions", middleware.TokenAuth(), consumer)
+	status, lease := putOperationLease(t, server.Client(), server.URL, "web.search.lease", "web.search", true, []string{"deepseek-search"}, 1)
+	require.Equal(t, http.StatusOK, status, "web.search 必须是可换发的普通调用用途")
+	for _, tc := range []struct {
+		path, body string
+		status     int
+	}{
+		{"/v1/tools/search", `{"query":"唤星","count":3}`, http.StatusNoContent},
+		{"/v1/tools/fetch", `{"url":"https://example.com/"}`, http.StatusForbidden},
+		{"/v1/chat/completions", `{"model":"deepseek-search","messages":[]}`, http.StatusForbidden},
+	} {
+		request, err := http.NewRequest(http.MethodPost, server.URL+tc.path, bytes.NewBufferString(tc.body))
+		require.NoError(t, err)
+		request.Header.Set("Authorization", "Bearer "+lease.RelayToken)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := server.Client().Do(request)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, tc.status, response.StatusCode, tc.path)
+	}
+	assert.Equal(t, 1, visited, "错误用途不得到达资源消费者")
+}
