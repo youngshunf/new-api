@@ -45,6 +45,12 @@ func TestPostInternalAccountRejectsStrictBodyViolations(t *testing.T) {
 		`{"provision_key":"ok","payload_hash":"nope"}`,
 		`{"provision_key":"ok"} {"provision_key":"again"}`,
 		`[]`,
+		`{"provision_key":"ok","workspace_key":"workspace_abc"}`,
+		`{"provision_key":"ok","workspace_kind":"personal"}`,
+		`{"provision_key":"ok","workspace_key":"workspace_abc","workspace_kind":"team"}`,
+		`{"provision_key":"ok","workspace_key":"ws_abc","workspace_kind":"personal"}`,
+		`{"provision_key":"ok","workspace_key":null,"workspace_kind":"personal"}`,
+		`{"provision_key":"ok","workspace_key":7,"workspace_kind":"personal"}`,
 	}
 	for _, body := range cases {
 		t.Run(body, func(t *testing.T) {
@@ -73,7 +79,7 @@ func TestPostInternalAccountReturnsNewAPIUserID(t *testing.T) {
 
 func TestGetInternalAccountReturnsExactStatusBodyAndNotFound(t *testing.T) {
 	setupInternalAccountControllerDB(t)
-	userId, err := model.ProvisionInternalAccount("controller-get-provision")
+	userId, err := model.ProvisionInternalAccount("controller-get-provision", nil)
 	require.Nil(t, err)
 
 	gin.SetMode(gin.TestMode)
@@ -93,4 +99,30 @@ func TestGetInternalAccountReturnsExactStatusBodyAndNotFound(t *testing.T) {
 	router.ServeHTTP(missing, missingReq)
 	assert.Equal(t, http.StatusNotFound, missing.Code)
 	assert.Contains(t, missing.Body.String(), model.InternalAccountErrorUserNotFound)
+}
+
+func TestPostInternalAccountRecordsWorkspaceAndRejectsConflictingReplay(t *testing.T) {
+	setupInternalAccountControllerDB(t)
+	body := `{"provision_key":"controller-seat","workspace_key":"workspace_ent_42","workspace_kind":"enterprise"}`
+	first := performInternalAccountRequest(body)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	var created map[string]int
+	require.NoError(t, common.Unmarshal(first.Body.Bytes(), &created))
+
+	var stored model.InternalAccountProvision
+	require.NoError(t, model.DB.Where("provision_key = ?", "controller-seat").First(&stored).Error)
+	require.NotNil(t, stored.WorkspaceKey)
+	assert.Equal(t, "workspace_ent_42", *stored.WorkspaceKey)
+	assert.Equal(t, "enterprise", *stored.WorkspaceKind)
+	assert.Equal(t, created["newapi_user_id"], stored.UserId)
+
+	replay := performInternalAccountRequest(body)
+	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	var replayed map[string]int
+	require.NoError(t, common.Unmarshal(replay.Body.Bytes(), &replayed))
+	assert.Equal(t, created["newapi_user_id"], replayed["newapi_user_id"])
+
+	conflict := performInternalAccountRequest(`{"provision_key":"controller-seat","workspace_key":"workspace_ent_43","workspace_kind":"enterprise"}`)
+	assert.Equal(t, http.StatusConflict, conflict.Code)
+	assert.Contains(t, conflict.Body.String(), `"code":"idempotency_conflict"`)
 }

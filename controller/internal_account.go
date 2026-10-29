@@ -16,12 +16,17 @@ import (
 
 const maxInternalAccountRequestBody = 1024
 
+// workspace_key / workspace_kind 可选：llm-dev 多会话共享，必填会拒掉未升级 core 的开户。
 type internalAccountProvisionRequest struct {
-	ProvisionKey string `json:"provision_key"`
+	ProvisionKey  string  `json:"provision_key"`
+	WorkspaceKey  *string `json:"workspace_key,omitempty"`
+	WorkspaceKind *string `json:"workspace_kind,omitempty"`
 }
 
 var internalAccountProvisionAllowedFields = map[string]struct{}{
-	"provision_key": {},
+	"provision_key":  {},
+	"workspace_key":  {},
+	"workspace_kind": {},
 }
 
 func decodeInternalAccountProvisionRequest(c *gin.Context) (*internalAccountProvisionRequest, error) {
@@ -61,7 +66,12 @@ func PostInternalAccount(c *gin.Context) {
 		middleware.AbortWithInternalServiceError(c, http.StatusBadRequest, model.InternalAccountErrorInvalidRequest, decodeErr.Error(), false)
 		return
 	}
-	userId, accountErr := model.ProvisionInternalAccount(req.ProvisionKey)
+	workspace, workspaceErr := model.ValidateInternalAccountWorkspace(req.WorkspaceKey, req.WorkspaceKind)
+	if workspaceErr != nil {
+		abortWithInternalAccountError(c, workspaceErr)
+		return
+	}
+	userId, accountErr := model.ProvisionInternalAccount(req.ProvisionKey, workspace)
 	if accountErr != nil {
 		abortWithInternalAccountError(c, accountErr)
 		return
