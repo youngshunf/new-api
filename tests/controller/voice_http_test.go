@@ -55,7 +55,7 @@ func TestVoiceHTTPBoundTTSSendsNativeVoiceOnlyOnce(t *testing.T) {
 	previousPrice := ratio_setting.ModelPrice2JSONString()
 	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrice)) })
 	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"cosyvoice-v3.5-plus":0}`))
-	lease, leaseErr := model.UpsertRelayLease(model.RelayLeaseSpec{ExternalLeaseId: "vc7.voice-wire", NewApiUserId: 771001, CredentialGeneration: 1, ModelGroup: "default", ModelLimits: []string{"cosyvoice-v3.5-plus"}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy", Operation: "audio.tts"})
+	lease, leaseErr := model.UpsertRelayLease(model.RelayLeaseSpec{ExternalLeaseId: "vc7.voice-wire", NewApiUserId: 771001, CredentialGeneration: 1, ModelGroup: "default", ModelLimits: []string{}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy"})
 	require.Nil(t, leaseErr)
 	// 真实数据库状态夹具只用于消费边界，不冒充供应商ready取证。
 	profile, _, err := model.BeginVoiceCreation(context.Background(), model.VoiceCreationSpec{UserId: 771001, CreatorTokenId: lease.Token.Id, ChannelId: 771001, IdempotencyKey: "tts-wire-state", RequestDigest: strings.Repeat("c", 64), Kind: "clone", Language: "zh", TargetModel: "cosyvoice-v3.5-plus"})
@@ -115,17 +115,15 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 771001).Updates(map[string]any{"type": constant.ChannelTypeAli, "models": "cosyvoice-v3.5-plus", "key": "local-protocol-measurement", "base_url": wire.URL}).Error)
 	require.NoError(t, db.Where("channel_id = ?", 771001).Delete(&model.Ability{}).Error)
 	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "cosyvoice-v3.5-plus", ChannelId: 771001, Enabled: true}).Error)
-	require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, `{"default":{"publication_revision":2,"models":["cosyvoice-v3.5-plus","tts-1"]}}`))
-	issue := func(id, operation, modelName string, userID int) string {
-		issued, leaseErr := model.UpsertRelayLease(model.RelayLeaseSpec{ExternalLeaseId: id, NewApiUserId: userID, CredentialGeneration: 1, ModelGroup: "default",
-			ModelLimits: []string{modelName}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy", Operation: operation})
+	require.NoError(t, model.UpdateOption(model.HasnLlmModelGroupsOptionKey, `{"default":{"publication_revision":2,"models":["cosyvoice-v3.5-plus","tts-1"]},"narrow":{"publication_revision":2,"models":["tts-1"]}}`))
+	// 节点令牌按「空间 + 节点」一把，只绑模型组：建档、查询、试听、删除与合成用同一把。
+	issue := func(id, group string, userID int) string {
+		issued, leaseErr := model.UpsertRelayLease(model.RelayLeaseSpec{ExternalLeaseId: id, NewApiUserId: userID, CredentialGeneration: 1, ModelGroup: group,
+			ModelLimits: []string{}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy"})
 		require.Nil(t, leaseErr)
 		return model.RelayTokenPlaintext(issued.Token)
 	}
-	createKey := issue("vc7.voice-create", "audio.voice_create", "cosyvoice-v3.5-plus", 771001)
-	queryKey := issue("vc7.voice-query", "audio.voice_query", "cosyvoice-v3.5-plus", 771001)
-	deleteKey := issue("vc7.voice-delete", "audio.voice_delete", "cosyvoice-v3.5-plus", 771001)
-	ttsKey := issue("vc7.voice-tts", "audio.tts", "cosyvoice-v3.5-plus", 771001)
+	nodeKey := issue("vc7.voice-node", "default", 771001)
 	t.Setenv("VOICE_PUBLIC_ADDRESS", "")
 	for _, invalid := range []string{"missing-file", "duplicate-kind", "truncated", "missing-public-origin"} {
 		var body bytes.Buffer
@@ -152,7 +150,7 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 		request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/audio/voices", bytes.NewReader(payload))
 		require.NoError(t, err)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
-		request.Header.Set("Authorization", "Bearer "+createKey)
+		request.Header.Set("Authorization", "Bearer "+nodeKey)
 		request.Header.Set("Idempotency-Key", "invalid-clone-"+invalid)
 		response, err := server.Client().Do(request)
 		require.NoError(t, err)
@@ -185,9 +183,7 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 		return response.StatusCode, data
 	}
 	body := `{"kind":"design","model":"cosyvoice-v3.5-plus","language":"zh","description":"沉稳温柔的成年女性声音","preview_text":"这是一段长度符合要求的音色设计试听文本。"}`
-	status, _ := invoke(http.MethodPost, "/v1/audio/voices", ttsKey, "wrong-operation", body)
-	assert.Equal(t, http.StatusForbidden, status, "生产路由上的普通TTS租约不能建档")
-	status, data := invoke(http.MethodPost, "/v1/audio/voices", createKey, "stable-create", body)
+	status, data := invoke(http.MethodPost, "/v1/audio/voices", nodeKey, "stable-create", body)
 	require.Equal(t, http.StatusOK, status, string(data))
 	var created dto.VoiceResource
 	require.NoError(t, common.Unmarshal(data, &created))
@@ -200,7 +196,7 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 	preview, err := os.ReadFile("../fixtures/voice-preview.wav")
 	require.NoError(t, err)
 	require.NoError(t, store.SavePreview(created.VoiceRef, bytes.NewReader(preview)))
-	status, data = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef+"/preview", queryKey, "", "")
+	status, data = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef+"/preview", nodeKey, "", "")
 	require.Equal(t, http.StatusOK, status)
 	assert.Equal(t, preview, data, "试听HTTP直接返回原始WAV字节")
 	require.NoError(t, store.RemovePreview(created.VoiceRef))
@@ -218,32 +214,32 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 	require.NoError(t, response.Body.Close())
 	assert.Equal(t, http.StatusNotFound, response.StatusCode, "公开取件不能二次消费")
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 771001).Update("status", 2).Error)
-	status, data = invoke(http.MethodPost, "/v1/audio/voices", createKey, "stable-create", body)
+	status, data = invoke(http.MethodPost, "/v1/audio/voices", nodeKey, "stable-create", body)
 	require.Equal(t, http.StatusOK, status, string(data))
 	var replay dto.VoiceResource
 	require.NoError(t, common.Unmarshal(data, &replay))
 	assert.Equal(t, created, replay, "离线渠道也能恢复同一unknown，无重建")
-	status, _ = invoke(http.MethodPost, "/v1/audio/voices", createKey, "stable-create", `{"kind":"design","model":"cosyvoice-v3.5-plus","language":"zh","description":"另一声音","preview_text":"这是一段长度符合要求的音色设计试听文本。"}`)
+	status, _ = invoke(http.MethodPost, "/v1/audio/voices", nodeKey, "stable-create", `{"kind":"design","model":"cosyvoice-v3.5-plus","language":"zh","description":"另一声音","preview_text":"这是一段长度符合要求的音色设计试听文本。"}`)
 	assert.Equal(t, http.StatusConflict, status)
-	status, data = invoke(http.MethodGet, "/v1/audio/voices?idempotency_key=stable-create", queryKey, "", "")
+	status, data = invoke(http.MethodGet, "/v1/audio/voices?idempotency_key=stable-create", nodeKey, "", "")
 	require.Equal(t, http.StatusOK, status, string(data))
 	require.NoError(t, common.Unmarshal(data, &replay))
 	assert.Equal(t, created.VoiceRef, replay.VoiceRef)
-	status, _ = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef+"/preview", queryKey, "", "")
+	status, _ = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef+"/preview", nodeKey, "", "")
 	assert.Equal(t, http.StatusNotFound, status)
-	status, _ = invoke(http.MethodPost, "/v1/audio/speech", ttsKey, "", `{"model":"cosyvoice-v3.5-plus","input":"你好","voice":"`+created.VoiceRef+`"}`)
+	status, _ = invoke(http.MethodPost, "/v1/audio/speech", nodeKey, "", `{"model":"cosyvoice-v3.5-plus","input":"你好","voice":"`+created.VoiceRef+`"}`)
 	assert.Equal(t, http.StatusBadRequest, status, "unknown不能合成或回落默认声音")
-	status, data = invoke(http.MethodDelete, "/v1/audio/voices/"+created.VoiceRef, deleteKey, "", "")
+	status, data = invoke(http.MethodDelete, "/v1/audio/voices/"+created.VoiceRef, nodeKey, "", "")
 	require.Equal(t, http.StatusOK, status, string(data))
 	require.NoError(t, common.Unmarshal(data, &replay))
 	assert.True(t, replay.DeletePending)
 	assert.Equal(t, "unknown", replay.State, "无供应商ID不能编造delete ACK")
 	assert.Equal(t, int32(1), calls.Load())
-	outside := issue("vc7.voice-outside", "audio.voice_query", "tts-1", 771001)
+	outside := issue("vc7.voice-outside", "narrow", 771001)
 	status, _ = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef, outside, "", "")
 	assert.Equal(t, http.StatusForbidden, status)
 	require.NoError(t, db.Create(&model.User{Id: 771002, Username: "vc7-other", AffCode: "vc7-other", Group: "default", Quota: 1000, Status: common.UserStatusEnabled}).Error)
-	other := issue("vc7.voice-other", "audio.voice_query", "cosyvoice-v3.5-plus", 771002)
+	other := issue("vc7.voice-other", "default", 771002)
 	status, _ = invoke(http.MethodGet, "/v1/audio/voices/"+created.VoiceRef, other, "", "")
 	assert.Equal(t, http.StatusNotFound, status, "稳定账号归属不能由新token替代")
 	// 按次价显式配置必须被现BillingSession执行，不能以供应商免费静默忽略。
@@ -251,7 +247,7 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrice)) })
 	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"voice-enrollment":100}`))
 	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 771001).Update("status", 1).Error)
-	status, _ = invoke(http.MethodPost, "/v1/audio/voices", createKey, "paid-create", body)
+	status, _ = invoke(http.MethodPost, "/v1/audio/voices", nodeKey, "paid-create", body)
 	assert.Equal(t, http.StatusForbidden, status)
 	assert.Equal(t, int32(1), calls.Load(), "不足额度必须在真实派发前拒绝")
 	var count int64
@@ -260,7 +256,7 @@ func TestVoiceHTTPUnknownRecoveryNeverRecreates(t *testing.T) {
 	// 真实数据库终局夹具验证消费行为，不宣称已取得供应商拒绝回执。
 	_, err = model.RecordVoiceFailure(context.Background(), 771001, created.VoiceRef, "provider_rejected", true)
 	require.NoError(t, err)
-	status, data = invoke(http.MethodPost, "/v1/audio/voices", createKey, "stable-create", body)
+	status, data = invoke(http.MethodPost, "/v1/audio/voices", nodeKey, "stable-create", body)
 	require.Equal(t, http.StatusOK, status, string(data))
 	require.NoError(t, common.Unmarshal(data, &replay))
 	assert.Equal(t, "failed", replay.State)

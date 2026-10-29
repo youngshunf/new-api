@@ -516,6 +516,8 @@ func TestPutRelayLeaseRejectsInvalidRequests(t *testing.T) {
 		{"uppercase model group", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"Default","model_limits":[],"expires_time":"` + future + `"}`},
 		{"missing model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","expires_time":"` + future + `"}`},
 		{"null model limits", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":null,"expires_time":"` + future + `"}`},
+		{"generic lease with one model", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o"],"expires_time":"` + future + `"}`},
+		{"generic lease with retired operation", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":[],"expires_time":"` + future + `","operation":"web.search"}`},
 		{"generic lease with two models", leaseTestId, `{"newapi_user_id":7,"credential_generation":1,"model_group":"default","model_limits":["gpt-4o","tts-1"],"expires_time":"` + future + `"}`},
 		{"audio lease without model", leaseTestId, `{` + audio + `,"model_limits":[]}`},
 		{"audio lease with two models", leaseTestId, `{` + audio + `,"model_limits":["tts-1","tts-1-hd"]}`},

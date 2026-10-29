@@ -47,7 +47,6 @@ var relayLeaseRequestAllowedFields = map[string]struct{}{
 	"expires_time":          {},
 	"purpose":               {},
 	"accounting_mode":       {},
-	"operation":             {},
 }
 
 // modelGroupRequestAllowedFields 是 LlmModelGroupRequest 的字段闭集，两项都必填。
@@ -254,7 +253,6 @@ func PutInternalRelayLease(c *gin.Context) {
 		ExpiresTime:          time.Unix(outcome.Token.ExpiredTime, 0).UTC().Format(time.RFC3339),
 		Purpose:              outcome.Token.Purpose,
 		AccountingMode:       outcome.Token.AccountingMode,
-		Operation:            outcome.Token.Operation,
 		TokenPrefix:          model.RelayTokenPrefix(outcome.Token),
 		RelayToken:           model.RelayTokenPlaintext(outcome.Token),
 		Created:              outcome.Created,
@@ -328,9 +326,6 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if err := common.UnmarshalStrictObject(body, &request); err != nil {
 		return nil, invalid("request body does not match the relay lease schema")
 	}
-	if value, present := probe["operation"]; present && (value == nil || request.Operation == "") {
-		return nil, invalid("operation must be omitted for Runtime or contain a non-empty operation for a call")
-	}
 
 	if request.NewApiUserId <= 0 {
 		return nil, invalid("newapi_user_id must be a positive integer")
@@ -361,7 +356,7 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 	if accountingErr != nil {
 		return nil, invalid("%s", accountingErr.Error())
 	}
-	if err := model.ValidateRelayLeaseOperation(request.Operation, purpose, modelLimits); err != nil {
+	if err := model.ValidateRelayLeaseModelLimits(purpose, modelLimits); err != nil {
 		return nil, invalid("%s", err)
 	}
 
@@ -374,7 +369,6 @@ func decodeRelayLeaseRequest(c *gin.Context, externalLeaseId string) (*model.Rel
 		ExpiredTime:          expiresTime.Unix(),
 		Purpose:              purpose,
 		AccountingMode:       accountingMode,
-		Operation:            request.Operation,
 	}, nil
 }
 

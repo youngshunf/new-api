@@ -83,23 +83,22 @@ func setupOrdinaryCallHTTP(t *testing.T) (*gorm.DB, *gin.Engine, *httptest.Serve
 	return db, engine, server
 }
 
-func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
+// 节点令牌只绑模型组：/v1/models 恰好列出组内模型，任何名单收窄都在签发时拒绝。
+func TestNodeLeaseListsExactlyItsModelGroup(t *testing.T) {
 	db, _, server := setupOrdinaryCallHTTP(t)
 	for _, tc := range []struct {
-		name      string
-		limits    []string
-		operation string
-		status    int
-		models    []string
+		name   string
+		limits []string
+		status int
+		models []string
 	}{
-		{name: "runtime", limits: []string{}, status: http.StatusOK, models: []string{"gpt-4o", "tts-1"}},
-		{name: "single-call", limits: []string{"tts-1"}, operation: "audio.tts", status: http.StatusOK, models: []string{"tts-1"}},
-		{name: "multiple-models", limits: []string{"gpt-4o", "tts-1"}, operation: "audio.tts", status: http.StatusBadRequest},
-		{name: "outside-group", limits: []string{"whisper-1"}, operation: "audio.transcribe", status: http.StatusOK, models: []string{}},
+		{name: "node", limits: []string{}, status: http.StatusOK, models: []string{"gpt-4o", "tts-1"}},
+		{name: "single-model", limits: []string{"tts-1"}, status: http.StatusBadRequest},
+		{name: "outside-group", limits: []string{"whisper-1"}, status: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload, marshalErr := common.Marshal(dto.LlmRelayLeaseRequest{NewApiUserId: 771001, CredentialGeneration: 1,
-				ModelGroup: "default", ModelLimits: tc.limits, ExpiresTime: time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339), Purpose: "generic", AccountingMode: "legacy", Operation: tc.operation})
+				ModelGroup: "default", ModelLimits: tc.limits, ExpiresTime: time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339), Purpose: "generic", AccountingMode: "legacy"})
 			require.NoError(t, marshalErr)
 			request, requestErr := http.NewRequest(http.MethodPut, server.URL+"/api/internal/v1/llm/relay-leases/vc7."+tc.name, bytes.NewReader(payload))
 			require.NoError(t, requestErr)
@@ -118,12 +117,10 @@ func TestOrdinaryCallLeaseNarrowsRuntimeGroup(t *testing.T) {
 			}
 			var lease dto.LlmRelayLeaseView
 			require.NoError(t, common.Unmarshal(body, &lease))
-			assert.Equal(t, tc.operation, lease.Operation)
 			stored, lookupErr := model.GetTokenById(lease.NewApiTokenId)
 			require.NoError(t, lookupErr)
-			assert.Equal(t, len(tc.limits) == 1, stored.ModelLimitsEnabled)
-			assert.Equal(t, tc.limits, stored.GetModelLimits())
-			assert.Equal(t, tc.operation, stored.Operation)
+			assert.False(t, stored.ModelLimitsEnabled)
+			assert.Empty(t, stored.GetModelLimits())
 			request, requestErr = http.NewRequest(http.MethodGet, server.URL+"/v1/models", nil)
 			require.NoError(t, requestErr)
 			request.Header.Set("Authorization", "Bearer "+lease.RelayToken)

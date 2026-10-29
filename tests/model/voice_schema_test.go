@@ -93,14 +93,11 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 					require.NoError(t, migrations.Apply(db))
 					require.NoError(t, migrations.Apply(db))
 					require.NoError(t, migrations.Verify(db))
-					runRelayOperationPersistenceContract(t, db)
+					runRelayLeasePersistenceContract(t, db)
 					if stage != "fresh" {
 						var remaining int
 						require.NoError(t, db.Table("tokens").Where("id = ?", 77001).Pluck("remain_quota", &remaining).Error)
 						assert.Equal(t, 73, remaining)
-						var operation string
-						require.NoError(t, db.Table("tokens").Where("id = ?", 77001).Pluck("operation", &operation).Error)
-						assert.Empty(t, operation, "旧Runtime升级后仍省略用途")
 					}
 					stamp := model.DatabaseTime{Time: time.Date(2026, 10, 11, 1, 2, 3, 456000000, time.UTC)}
 					row := map[string]any{"voice_ref": "01998dd2-0000-7000-8000-000000007701", "created_time": stamp, "updated_time": stamp, "revision": 1,

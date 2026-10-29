@@ -70,11 +70,10 @@ func TestUpsertRelayLeaseExplicitGenericStoresGenericLegacy(t *testing.T) {
 			ExternalLeaseId:      "generic-lease-19002-" + form[0],
 			NewApiUserId:         19002,
 			CredentialGeneration: 1,
-			ModelLimits:          []string{"gpt-4o-mini"},
+			ModelLimits:          []string{},
 			ExpiredTime:          time.Now().Add(time.Hour).Unix(),
 			Purpose:              form[0],
 			AccountingMode:       form[1],
-			Operation:            "chat.completions",
 		}
 		issued, leaseErr := UpsertRelayLease(spec)
 		require.Nil(t, leaseErr)

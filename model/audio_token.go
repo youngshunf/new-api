@@ -14,10 +14,6 @@ func CheckTokenAccountingMode(token *Token) error {
 	}
 	if token.Purpose == "" || token.Purpose == "generic" {
 		if token.AccountingMode == "" || token.AccountingMode == "legacy" {
-			if token.Operation != "" && (token.ExternalLeaseId == nil || !token.ModelLimitsEnabled ||
-				ValidateRelayLeaseOperation(token.Operation, "generic", token.GetModelLimits()) != nil) {
-				return ErrTokenInvalid
-			}
 			// generic relay lease 仍由可信内部租约入口签发；ExternalLeaseId
 			// 只标识租约归属，不应把普通 LLM lease 误判成音频同步令牌。
 			return nil
@@ -49,7 +45,7 @@ func checkManagedTokenMutation(token *Token) error {
 	if err := DB.Unscoped().Where("id = ?", token.Id).First(&stored).Error; err != nil {
 		return err
 	}
-	if stored.AccountingMode == "synchronous" || stored.ExternalLeaseId != nil || stored.Operation != "" {
+	if stored.AccountingMode == "synchronous" || stored.ExternalLeaseId != nil {
 		return errors.New("受管音频令牌的资格只能由可信租约控制面修改")
 	}
 	return nil
@@ -58,7 +54,7 @@ func checkManagedTokenMutation(token *Token) error {
 // cachedManagedToken 必须现读DB校验当前Key/撤销与模式，不能凭旧缓存继续授权。
 // cachedManagedToken 不替代通用余额准入；受管metadata命中时仍核真实凭据当前状态。
 func cachedManagedToken(token *Token, key string) (*Token, error) {
-	if token.AccountingMode == "synchronous" || token.ExternalLeaseId != nil || token.Operation != "" {
+	if token.AccountingMode == "synchronous" || token.ExternalLeaseId != nil {
 		var stored Token
 		if err := DB.Where(commonKeyCol+" = ?", key).First(&stored).Error; err != nil {
 			return nil, err

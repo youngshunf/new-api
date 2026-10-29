@@ -63,6 +63,18 @@ var externalLeaseIdPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 
 func stringPointer(value string) *string { return &value }
 
+// ValidateRelayLeaseModelLimits 守住令牌形状：generic 租约只绑模型组、名单恒空（节点一把共用，不按用途或模型收窄）；
+// 历史受管音频租约恰好一个模型。
+func ValidateRelayLeaseModelLimits(purpose string, models []string) error {
+	if purpose == "generic" && len(models) != 0 {
+		return errors.New("generic relay lease is bound to its model group only; model_limits must be empty")
+	}
+	if purpose != "generic" && len(models) != 1 {
+		return errors.New("managed audio lease requires exactly one model")
+	}
+	return nil
+}
+
 // NormalizeRelayLeaseAccounting 校验并归一租约的用途与记账模式。
 //
 // 私有契约 llm-relay-lease-internal-v1 要求 generic 租约显式携带 purpose=generic、
@@ -196,14 +208,13 @@ type RelayLeaseSpec struct {
 	CredentialGeneration int64
 	// ModelGroup 是令牌所属模型组；可调用集合由组映射决定（设计 §8.2.2）。
 	ModelGroup string
-	// ModelLimits 只表达「比所在组更窄」：Runtime 为空，普通 call 与独立音频恰好一个模型。
+	// ModelLimits 只表达「比所在组更窄」：generic 租约恒为空，独立音频恰好一个模型。
 	ModelLimits []string
 	// ExpiredTime 是 Unix 秒。lease 一律有期限，这里不接受 -1（永不过期）。
 	ExpiredTime int64
 	// Purpose 与 AccountingMode 是可信租约控制面的受管音频资格；generic/legacy 保持旧租约。
 	Purpose        string
 	AccountingMode string
-	Operation      string
 }
 
 // RelayLeaseOutcome 是一次幂等签发的结果。
@@ -243,7 +254,7 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", accountingErr)
 	}
 	spec.Purpose, spec.AccountingMode = purpose, accountingMode
-	if err := ValidateRelayLeaseOperation(spec.Operation, spec.Purpose, spec.ModelLimits); err != nil {
+	if err := ValidateRelayLeaseModelLimits(spec.Purpose, spec.ModelLimits); err != nil {
 		return nil, relayLeaseError(http.StatusBadRequest, RelayLeaseErrorInvalidRequest, false, "%s", err)
 	}
 	relayLeaseUpsertLock.Lock()
@@ -290,14 +301,13 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			AccountingMode:     spec.AccountingMode,
 			ExternalLeaseId:    stringPointer(spec.ExternalLeaseId),
 			ModelGroup:         spec.ModelGroup,
-			Operation:          spec.Operation,
 		}
 		if insertErr := DB.Table("tokens").Create(map[string]any{
 			"user_id": lease.UserId, "name": lease.Name, "key": lease.Key, "status": lease.Status,
 			"created_time": lease.CreatedTime, "accessed_time": lease.AccessedTime, "expired_time": lease.ExpiredTime,
 			"unlimited_quota": lease.UnlimitedQuota, "model_limits_enabled": lease.ModelLimitsEnabled,
 			"model_limits": lease.ModelLimits, "purpose": lease.Purpose, "accounting_mode": lease.AccountingMode,
-			"external_lease_id": spec.ExternalLeaseId, "model_group": lease.ModelGroup, "operation": lease.Operation,
+			"external_lease_id": spec.ExternalLeaseId, "model_group": lease.ModelGroup,
 		}).Error; insertErr != nil {
 			return nil, relayLeaseError(http.StatusServiceUnavailable, RelayLeaseErrorStorageUnavailable, true,
 				"failed to persist the lease")
@@ -324,9 +334,9 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 			"lease %s is already at credential_generation %d",
 			spec.ExternalLeaseId, existingGeneration)
 	}
-	if existing.Operation != spec.Operation || existing.Purpose != spec.Purpose || existing.AccountingMode != spec.AccountingMode {
+	if existing.Purpose != spec.Purpose || existing.AccountingMode != spec.AccountingMode {
 		return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false,
-			"the purpose, accounting mode and operation of an existing relay lease cannot change")
+			"the purpose and accounting mode of an existing relay lease cannot change")
 	}
 
 	if spec.CredentialGeneration == existingGeneration {
@@ -367,7 +377,7 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 	// 走 Table 而不是 Model(&Token{})：purpose/accounting_mode/external_lease_id/model_group 在结构体上
 	// 是只读映射（正式迁移拥有这些列），经 Model 的 map Updates 会被 GORM 静默丢弃。
 	result := DB.Unscoped().Table("tokens").Where(map[string]any{
-		"id": existing.Id, "name": existing.Name, "key": existing.Key, "operation": existing.Operation,
+		"id": existing.Id, "name": existing.Name, "key": existing.Key,
 		"purpose": existing.Purpose, "accounting_mode": existing.AccountingMode, "model_group": existing.ModelGroup,
 		"model_limits": existing.ModelLimits, "expired_time": existing.ExpiredTime, "deleted_at": existing.DeletedAt,
 		"status": existing.Status, "model_limits_enabled": existing.ModelLimitsEnabled,
@@ -385,7 +395,7 @@ func UpsertRelayLease(spec RelayLeaseSpec) (*RelayLeaseOutcome, *RelayLeaseError
 		// MySQL无变化重投会报0行；现读必须仍与完整目标规格一致，才能作为幂等成功。
 		var current Token
 		if err := DB.Unscoped().First(&current, existing.Id).Error; err != nil || current.Name != updated.Name || current.Key != updated.Key ||
-			current.Operation != updated.Operation || current.Purpose != updated.Purpose || current.AccountingMode != updated.AccountingMode ||
+			current.Purpose != updated.Purpose || current.AccountingMode != updated.AccountingMode ||
 			current.ModelGroup != updated.ModelGroup || current.ModelLimits != updated.ModelLimits || current.ModelLimitsEnabled != updated.ModelLimitsEnabled ||
 			current.ExpiredTime != updated.ExpiredTime || current.UserId != updated.UserId || current.Status != updated.Status || current.DeletedAt.Valid {
 			return nil, relayLeaseError(http.StatusConflict, RelayLeaseErrorConflict, false, "relay lease changed during update")

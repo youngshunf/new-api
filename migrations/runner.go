@@ -188,7 +188,7 @@ func verifyTargetSchema(db *gorm.DB) error {
 	found := map[string]bool{}
 	for _, column := range columns {
 		name := column.Name()
-		if name != "model_group" && name != "operation" {
+		if name != "model_group" {
 			continue
 		}
 		if nullable, known := column.Nullable(); known && nullable {
@@ -206,7 +206,7 @@ func verifyTargetSchema(db *gorm.DB) error {
 		}
 		found[name] = true
 	}
-	for _, name := range []string{"model_group", "operation"} {
+	for _, name := range []string{"model_group"} {
 		if !found[name] {
 			return fmt.Errorf("缺少目标列：tokens.%s", name)
 		}

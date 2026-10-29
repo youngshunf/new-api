@@ -15,34 +15,31 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func TestRelayOperationPersistsAcrossCredentialRotation(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/operation.db"), &gorm.Config{})
+func TestRelayLeasePersistsAcrossCredentialRotation(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/lease.db"), &gorm.Config{})
 	require.NoError(t, err)
 	pool, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, pool.Close()) })
 	require.NoError(t, db.AutoMigrate(&model.Token{}))
-	assert.False(t, db.Migrator().HasColumn("tokens", "operation"), "用途列必须由正式SQL拥有")
+	assert.False(t, db.Migrator().HasColumn("tokens", "model_group"), "模型组列必须由正式SQL拥有")
 	require.NoError(t, migrations.Apply(db))
-	runRelayOperationPersistenceContract(t, db)
-	for _, statement := range []string{"ALTER TABLE tokens RENAME COLUMN operation TO lost_operation"} {
-		require.NoError(t, db.Exec(statement).Error)
-		require.Error(t, migrations.Verify(db), "账本在场不能掩盖用途列损坏")
-	}
+	runRelayLeasePersistenceContract(t, db)
+	require.NoError(t, db.Exec("ALTER TABLE tokens RENAME COLUMN model_group TO lost_model_group").Error)
+	require.Error(t, migrations.Verify(db), "账本在场不能掩盖模型组列损坏")
 }
 
-func runRelayOperationPersistenceContract(t *testing.T, db *gorm.DB) {
+func runRelayLeasePersistenceContract(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	previousDB, previousRedis := model.DB, common.RedisEnabled
 	model.DB, common.RedisEnabled = db, false
 	t.Cleanup(func() { model.DB, common.RedisEnabled = previousDB, previousRedis })
 	require.NoError(t, db.AutoMigrate(&model.User{}))
-	require.NoError(t, db.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.User{Id: 777001, Username: "vc7-operation", AffCode: "vc7-operation", Status: common.UserStatusEnabled}).Error)
-	spec := model.RelayLeaseSpec{ExternalLeaseId: "vc7.operation.persistence", NewApiUserId: 777001, CredentialGeneration: 1, ModelGroup: "default",
-		ModelLimits: []string{"tts-1"}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy", Operation: "audio.tts"}
+	require.NoError(t, db.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.User{Id: 777001, Username: "vc7-lease", AffCode: "vc7-lease", Status: common.UserStatusEnabled}).Error)
+	spec := model.RelayLeaseSpec{ExternalLeaseId: "vc7.lease.persistence", NewApiUserId: 777001, CredentialGeneration: 1, ModelGroup: "default",
+		ModelLimits: []string{}, ExpiredTime: time.Now().Add(15 * time.Minute).Unix(), Purpose: "generic", AccountingMode: "legacy"}
 	issued, leaseErr := model.UpsertRelayLease(spec)
 	require.Nil(t, leaseErr)
-	assert.Equal(t, spec.Operation, issued.Token.Operation)
 	replayed, leaseErr := model.UpsertRelayLease(spec)
 	require.Nil(t, leaseErr, "同代完整同规格必须返回原Key")
 	assert.Equal(t, issued.Token.Key, replayed.Token.Key)
@@ -51,33 +48,24 @@ func runRelayOperationPersistenceContract(t *testing.T, db *gorm.DB) {
 	require.Nil(t, leaseErr)
 	assert.True(t, rotated.Rotated)
 	assert.NotEqual(t, issued.Token.Key, rotated.Token.Key)
-	assert.Equal(t, spec.Operation, rotated.Token.Operation)
 	stored, err := model.GetTokenById(rotated.Token.Id)
 	require.NoError(t, err)
-	assert.Equal(t, spec.Operation, stored.Operation)
-	assert.Error(t, stored.Update(), "普通Token编辑不得清空内部租约用途")
-	spec.Operation = "audio.voice_create"
-	spec.CredentialGeneration++
-	_, leaseErr = model.UpsertRelayLease(spec)
+	assert.Equal(t, "default", stored.ModelGroup)
+	assert.Error(t, stored.Update(), "普通Token编辑不得改写内部租约")
+	audio := spec
+	audio.Purpose, audio.AccountingMode, audio.ModelLimits, audio.CredentialGeneration = "audio.tts", "synchronous", []string{"tts-1"}, 3
+	_, leaseErr = model.UpsertRelayLease(audio)
 	require.NotNil(t, leaseErr)
-	assert.Equal(t, http.StatusConflict, leaseErr.HTTPStatus)
+	assert.Equal(t, http.StatusConflict, leaseErr.HTTPStatus, "既有租约的用途不能改")
 	assert.Equal(t, model.RelayLeaseErrorConflict, leaseErr.Code)
-	spec.Operation, spec.ModelLimits = "", []string{}
-	_, leaseErr = model.UpsertRelayLease(spec)
-	require.NotNil(t, leaseErr)
-	assert.Equal(t, http.StatusConflict, leaseErr.HTTPStatus)
 	stored, err = model.GetTokenById(rotated.Token.Id)
 	require.NoError(t, err)
-	assert.Equal(t, "audio.tts", stored.Operation)
 	assert.Equal(t, rotated.Token.Key, stored.Key)
-	spec.Operation, spec.ModelLimits, spec.CredentialGeneration = "audio.tts", []string{"tts-1"}, 2
-	for _, field := range []string{"model_group", "model_limits", "expired_time"} {
+	for _, field := range []string{"model_group", "expired_time"} {
 		changed := spec
 		switch field {
 		case "model_group":
 			changed.ModelGroup = "pro"
-		case "model_limits":
-			changed.ModelLimits = []string{"other"}
 		case "expired_time":
 			changed.ExpiredTime++
 		}
