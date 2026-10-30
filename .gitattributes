@@ -22,6 +22,10 @@
 # Shell scripts
 *.sh text eol=lf
 
+# Embedded runtime assets: migration checksums and Redis scripts must be byte-identical on every OS
+*.sql text eol=lf
+*.lua text eol=lf
+
 # Binary files
 *.png binary
 *.jpg binary
