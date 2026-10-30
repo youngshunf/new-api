@@ -14,6 +14,7 @@ import (
 	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -207,4 +208,33 @@ func TestSoraSubmitAgnesVideoDialect(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "seconds": float64(8)}, body(t, descriptor))
 	})
+}
+
+// agnes 收方形像素尺寸（1024x1024、960x960 改写为 1:1 画幅），计费用量的 size 枚举必须同样接受，
+// 否则建单前就被宿主以 plugin_usage_invalid 拒绝。表外尺寸在 buildSubmitRequest 处拒绝，见上方方言测试。
+func TestSoraAgnesSquareSizeUsageFacts(t *testing.T) {
+	plugin := loadSoraPlugin(t)
+	estimate := func(t *testing.T, size string) (map[string]float64, error) {
+		t.Helper()
+		const videoModel = "agnes-video-2.5-flash"
+		info := &relaycommon.RelayInfo{
+			ChannelMeta:     &relaycommon.ChannelMeta{ApiKey: "agnes-key", ChannelBaseUrl: "https://api.agnes.example", UpstreamModelName: videoModel},
+			OriginModelName: videoModel,
+			TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		}
+		adaptor := taskplugin.New(plugin)
+		adaptor.Init(info)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+		c.Set("task_request", map[string]any{"model": videoModel, "prompt": "星仔待机", "seconds": "4", "size": size})
+		require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+		return adaptor.EstimateBillingValidated(c, info)
+	}
+	for _, size := range []string{"1024x1024", "960x960"} {
+		t.Run(size, func(t *testing.T) {
+			ratios, err := estimate(t, size)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]float64{"seconds": 4}, ratios)
+		})
+	}
 }
