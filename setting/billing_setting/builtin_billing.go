@@ -36,4 +36,7 @@ var builtinBillingExpr = map[string]string{
 	// requests each, the same pricing page. The calls carry no tokens.
 	constant.DeepSeekSearchModel: `tier("request", fixed(0.00075))`,
 	constant.DeepSeekFetchModel:  `tier("request", fixed(0.00075))`,
+	// 通用搜索路由名：背后可能是元宝、DeepSeek 等任一提供方，对调用方按次固定价，
+	// 与 deepseek-search 同价；只在统一答复有结果时结算。
+	constant.WebSearchModel: `tier("request", fixed(0.00075))`,
 }
