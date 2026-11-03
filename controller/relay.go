@@ -231,7 +231,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			// 上游成功答复一次即计入该渠道当期调用数；未配置每期上限的渠道不做任何事。
-			model.RecordChannelRequestBudgetUse(channel)
+			// 上限取选中渠道写进上下文的设置：首次尝试的 channel 只是占位对象，不带 setting。
+			if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
+				model.RecordChannelRequestBudgetUse(channel.Id, channelSetting.RequestBudget)
+			}
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			return

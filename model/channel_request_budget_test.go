@@ -68,11 +68,11 @@ func TestChannelRequestBudgetExhaustedChannelFallsToNextPriority(t *testing.T) {
 	}
 
 	assert.Equal(t, map[bool]string{false: "free", true: "free"}, selectByPath(0))
-	RecordChannelRequestBudgetUse(&free)
+	RecordChannelRequestBudgetUse(free.Id, channelRequestBudget(&free))
 	assert.Equal(t, map[bool]string{false: "free", true: "free"}, selectByPath(0), "未用满仍优先免费渠道")
 
-	RecordChannelRequestBudgetUse(&free)
-	RecordChannelRequestBudgetUse(&paid) // 无上限的渠道不计数
+	RecordChannelRequestBudgetUse(free.Id, channelRequestBudget(&free))
+	RecordChannelRequestBudgetUse(paid.Id, channelRequestBudget(&paid)) // 无上限的渠道不计数
 	assert.True(t, ChannelRequestBudgetExhausted(&free, time.Now()))
 	assert.False(t, ChannelRequestBudgetExhausted(&paid, time.Now()))
 	var rows []struct {

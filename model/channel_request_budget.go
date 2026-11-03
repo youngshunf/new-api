@@ -55,15 +55,15 @@ func channelRequestBudget(channel *Channel) *dto.ChannelRequestBudget {
 	return setting.RequestBudget
 }
 
-// RecordChannelRequestBudgetUse 在上游成功答复后为渠道当期计数加一；渠道无上限时不做事。
+// RecordChannelRequestBudgetUse 在上游成功答复后为渠道当期计数加一；budget 为空（渠道无上限）时不做事。
+// 上限由调用方从选中渠道已解析的设置传入：首次尝试的渠道对象只是 id/类型/名字的占位，不带 setting。
 // 写库失败只记日志，不影响本次请求。
-func RecordChannelRequestBudgetUse(channel *Channel) {
-	budget := channelRequestBudget(channel)
-	if budget == nil {
+func RecordChannelRequestBudgetUse(channelID int, budget *dto.ChannelRequestBudget) {
+	if budget == nil || budget.Validate() != nil {
 		return
 	}
 	now := time.Now()
-	key := channelRequestBudgetUsageKey{channelID: channel.Id, periodKey: ChannelRequestBudgetPeriodKey(budget.Period, now)}
+	key := channelRequestBudgetUsageKey{channelID: channelID, periodKey: ChannelRequestBudgetPeriodKey(budget.Period, now)}
 	// 单条 upsert：PostgreSQL/SQLite 渲染为 ON CONFLICT ... DO UPDATE，MySQL 为 ON DUPLICATE KEY UPDATE。
 	err := DB.Table(channelRequestBudgetUsageTable).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "channel_id"}, {Name: "period_key"}},

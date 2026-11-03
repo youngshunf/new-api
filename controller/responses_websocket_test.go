@@ -1064,6 +1064,70 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 	}
 }
 
+// 首次尝试的 channel 只是 id/类型/名字的占位，每期调用上限必须取分发时写进上下文的渠道设置，
+// 否则首次尝试成功的调用永远不计数。
+func TestWebSearchFirstAttemptSuccessCountsChannelRequestBudget(t *testing.T) {
+	user, token := setupResponsesWSRequestTest(t)
+	require.NoError(t, model.DB.Model(user).Update("quota", 100000).Error)
+	require.NoError(t, model.DB.Model(token).Update("remain_quota", 100000).Error)
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		switch key {
+		case "billing_setting.billing_mode", "billing_setting.billing_expr", "group_ratio_setting.group_ratio":
+			saved[key] = value
+		}
+		return nil
+	}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"web-search":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"web-search":"tier(\"request\", fixed(0.002))"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+	service.InitHttpClient()
+
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if !assert.Equal(t, "/v1/tools/search", r.URL.Path) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"results":[{"title":"t","url":"https://a.example/x"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	channel := &model.Channel{Name: "web-search-budget", Key: "search-key", Status: common.ChannelStatusEnabled, Type: constant.ChannelTypeDeepSeek, Group: "default", Models: "web-search", BaseURL: &upstream.URL,
+		ModelMapping: common.GetPointer(`{"web-search":"deepseek-search"}`), Setting: common.GetPointer(`{"request_budget":{"period":"month","limit":5}}`)}
+	require.NoError(t, model.DB.Create(channel).Error)
+	require.NoError(t, model.DB.Create(&model.Ability{ChannelId: channel.Id, Model: "web-search", Group: "default", Enabled: true}).Error)
+
+	engine := gin.New()
+	engine.POST("/v1/tools/search", middleware.TokenAuth(), middleware.Distribute(), func(c *gin.Context) {
+		Relay(c, types.RelayFormatDeepSeekTools)
+	})
+	gateway := httptest.NewServer(engine)
+	t.Cleanup(gateway.Close)
+	request, err := http.NewRequest(http.MethodPost, gateway.URL+"/v1/tools/search", strings.NewReader(`{"model":"web-search","query":"budget"}`))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	require.Equal(t, int32(1), upstreamCalls.Load(), "the first attempt must succeed without a retry")
+
+	var usedCounts []int64
+	require.NoError(t, model.DB.Table("channel_request_budget_usages").
+		Where("channel_id = ? AND period_key = ?", channel.Id, model.ChannelRequestBudgetPeriodKey("month", time.Now())).
+		Pluck("used_count", &usedCounts).Error)
+	assert.Equal(t, []int64{1}, usedCounts)
+}
+
 func TestResponsesWebSocketLocalErrorsKeepStreamIdentity(t *testing.T) {
 	fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {
 		t.Error("local rejection reached upstream")

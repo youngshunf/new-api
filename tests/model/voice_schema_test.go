@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -134,16 +135,16 @@ func runChannelRequestBudgetContract(t *testing.T, db *gorm.DB) {
 	previousDB := model.DB
 	model.DB = db
 	t.Cleanup(func() { model.DB = previousDB })
-	setting := `{"request_budget":{"period":"day","limit":2}}`
-	channel := &model.Channel{Id: 77010, Setting: &setting}
-	model.RecordChannelRequestBudgetUse(channel)
-	model.RecordChannelRequestBudgetUse(channel)
+	budget := &dto.ChannelRequestBudget{Period: "day", Limit: 2}
+	model.RecordChannelRequestBudgetUse(77010, budget)
+	model.RecordChannelRequestBudgetUse(77010, budget)
 	var used []int64
 	require.NoError(t, db.Table("channel_request_budget_usages").
 		Where("channel_id = ? AND period_key = ?", 77010, model.ChannelRequestBudgetPeriodKey("day", time.Now())).
 		Pluck("used_count", &used).Error)
 	assert.Equal(t, []int64{2}, used)
-	assert.True(t, model.ChannelRequestBudgetExhausted(channel, time.Now()))
+	setting := `{"request_budget":{"period":"day","limit":2}}`
+	assert.True(t, model.ChannelRequestBudgetExhausted(&model.Channel{Id: 77010, Setting: &setting}, time.Now()))
 }
 
 // hasn@92a1488ae 的正式迁移只有V001/V002；不使用新表model伪装旧发布基线。
