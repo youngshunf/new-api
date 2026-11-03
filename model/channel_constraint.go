@@ -2,6 +2,7 @@ package model
 
 import (
 	"slices"
+	"time"
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
@@ -17,9 +18,14 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 // ChannelSatisfiesFilters reports whether ch passes every filter.
 // On false, it returns the first violated filter in filterEvalOrder for error
 // attribution.
+// 当期用满每期调用上限的渠道无论请求带不带过滤都不满足，归因 FilterRequestBudget；
+// 置顶、亲和与数据库选择路径都经过这里。
 func ChannelSatisfiesFilters(ch *Channel, modelName string, filters []dto.ChannelFilter) (bool, dto.ChannelFilterKind) {
 	if ch == nil {
 		return false, ""
+	}
+	if ChannelRequestBudgetExhausted(ch, time.Now()) {
+		return false, dto.FilterRequestBudget
 	}
 	for _, kind := range filterEvalOrder {
 		for _, filter := range filters {
@@ -38,11 +44,23 @@ func ChannelSatisfiesFilters(ch *Channel, modelName string, filters []dto.Channe
 // Caller must hold channelSyncLock (read lock). The input slice is never mutated.
 // A missing id in channelsIDM is kept for request_path (downstream consistency
 // error) and dropped for the other filters.
+// 先无条件剔除当期用满每期调用上限的渠道，再按请求过滤；调用方随后才按优先级分档，
+// 所以首选与重试都自然落到同档其他渠道或下一档。
 func filterCandidateIDs(ids []int, modelName string, filters []dto.ChannelFilter) (kept []int, emptiedBy dto.ChannelFilterKind) {
 	if len(ids) == 0 {
 		return ids, ""
 	}
-	kept = ids
+	now := time.Now()
+	kept = make([]int, 0, len(ids))
+	for _, id := range ids {
+		if channel, exists := channelsIDM[id]; exists && ChannelRequestBudgetExhausted(channel, now) {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	if len(kept) == 0 {
+		return kept, dto.FilterRequestBudget
+	}
 	for _, kind := range filterEvalOrder {
 		kindFilters := filtersByKind(filters, kind)
 		if len(kindFilters) == 0 {

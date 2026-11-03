@@ -28,4 +28,7 @@ const (
 const (
 	DeepSeekSearchModel = "deepseek-search"
 	DeepSeekFetchModel  = "deepseek-fetch"
+	// WebSearchModel 是 /v1/tools/search 的通用路由与计费名：所有搜索渠道都挂它，
+	// 渠道把它映射到的上游模型名即提供方名（见 relay/websearch）。
+	WebSearchModel = "web-search"
 )

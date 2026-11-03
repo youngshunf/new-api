@@ -92,6 +92,7 @@ export interface ChannelSettings {
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
   tls_insecure_skip_verify?: boolean
+  request_budget?: { period: 'day' | 'month'; limit: number }
 }
 
 export interface ChannelOtherSettings {
