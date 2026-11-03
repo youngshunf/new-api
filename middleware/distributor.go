@@ -475,8 +475,16 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	}
 	// The routing name is also the billing name, so a model named in the body
 	// must not replace it: DeepSeek ignores that field.
+	// 搜索只接受两个搜索路由名：请求体未写时沿用 deepseek-search，写了别的
+	// 名字（如对话模型）直接 400，否则会按零 token 计价。
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/tools/search") {
-		modelRequest.Model = constant.DeepSeekSearchModel
+		switch modelRequest.Model {
+		case "":
+			modelRequest.Model = constant.DeepSeekSearchModel
+		case constant.DeepSeekSearchModel, constant.WebSearchModel:
+		default:
+			return nil, false, fmt.Errorf("model %s cannot serve /v1/tools/search", modelRequest.Model)
+		}
 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/tools/fetch") {
 		modelRequest.Model = constant.DeepSeekFetchModel
 	}

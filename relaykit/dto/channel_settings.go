@@ -35,6 +35,35 @@ type ChannelSettings struct {
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+	// RequestBudget 是渠道每期调用上限；nil 即不限。当期用满的渠道不参与选择。
+	RequestBudget *ChannelRequestBudget `json:"request_budget,omitempty"`
+}
+
+// ChannelRequestBudget 按北京时间自然日或自然月分期的调用上限。
+type ChannelRequestBudget struct {
+	Period string `json:"period"`
+	Limit  int64  `json:"limit"`
+}
+
+const (
+	ChannelRequestBudgetPeriodDay   = "day"
+	ChannelRequestBudgetPeriodMonth = "month"
+	// MaxChannelRequestBudgetLimit 只防误填，远高于任何提供方的免费额度。
+	MaxChannelRequestBudgetLimit = 100000000
+)
+
+// Validate 校验保存时的每期调用上限；nil 表示不限，直接通过。
+func (b *ChannelRequestBudget) Validate() error {
+	if b == nil {
+		return nil
+	}
+	if b.Period != ChannelRequestBudgetPeriodDay && b.Period != ChannelRequestBudgetPeriodMonth {
+		return fmt.Errorf("invalid request_budget.period: %q, must be day or month", b.Period)
+	}
+	if b.Limit < 1 || b.Limit > MaxChannelRequestBudgetLimit {
+		return fmt.Errorf("invalid request_budget.limit: %d, must be between 1 and %d", b.Limit, MaxChannelRequestBudgetLimit)
+	}
+	return nil
 }
 
 // BindsTaskPlugin reports whether the channel is bound to the task plugin,

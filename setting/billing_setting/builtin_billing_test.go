@@ -202,7 +202,7 @@ func TestDeepSeekBuiltinBilling(t *testing.T) {
 			}
 		})
 	}
-	for _, model := range []string{"deepseek-search", "deepseek-fetch"} {
+	for _, model := range []string{"deepseek-search", "deepseek-fetch", "web-search"} {
 		expression, ok := billing_setting.GetBillingExpr(model)
 		require.True(t, ok, model)
 		result := quota(expression, &dto.Usage{})

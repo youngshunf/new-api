@@ -25,6 +25,8 @@ var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
+	// 每期调用计数快照在两种选择路径下都要用，先于内存缓存开关重载。
+	reloadChannelRequestBudgetUsages(time.Now())
 	if !common.MemoryCacheEnabled {
 		InvalidatePricingCache()
 		rebuildTaskAliasView()

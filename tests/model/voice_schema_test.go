@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,7 +82,7 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 			t.Logf("真实%s版本：%s", dialect, version)
 			for _, stage := range []string{"fresh", "upgrade", "upgrade_v003"} {
 				t.Run(stage, func(t *testing.T) {
-					require.NoError(t, db.Migrator().DropTable("voice_profiles", "audio_request_settlements", "schema_migrations", "tokens"))
+					require.NoError(t, db.Migrator().DropTable("channel_request_budget_usages", "voice_profiles", "audio_request_settlements", "schema_migrations", "tokens"))
 					require.NoError(t, db.AutoMigrate(&model.Token{}))
 					if stage != "fresh" {
 						applyVC7PreviousRelease(t, db, dialect)
@@ -94,6 +95,7 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 					require.NoError(t, migrations.Apply(db))
 					require.NoError(t, migrations.Verify(db))
 					runRelayLeasePersistenceContract(t, db)
+					runChannelRequestBudgetContract(t, db)
 					if stage != "fresh" {
 						var remaining int
 						require.NoError(t, db.Table("tokens").Where("id = ?", 77001).Pluck("remain_quota", &remaining).Error)
@@ -120,11 +122,29 @@ func TestVoiceSchemaRealDatabaseMatrix(t *testing.T) {
 				})
 			}
 			// 为table-first modelgen保留有效schema；该隔离库最终由任务出口清理。
-			require.NoError(t, db.Migrator().DropTable("voice_profiles", "audio_request_settlements", "schema_migrations", "tokens"))
+			require.NoError(t, db.Migrator().DropTable("channel_request_budget_usages", "voice_profiles", "audio_request_settlements", "schema_migrations", "tokens"))
 			require.NoError(t, db.AutoMigrate(&model.Token{}))
 			require.NoError(t, migrations.Apply(db))
 		})
 	}
+}
+
+// runChannelRequestBudgetContract 核 V006 每期调用计数：单条 upsert 在真实库首次插入、冲突时加一。
+func runChannelRequestBudgetContract(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	previousDB := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = previousDB })
+	budget := &dto.ChannelRequestBudget{Period: "day", Limit: 2}
+	model.RecordChannelRequestBudgetUse(77010, budget)
+	model.RecordChannelRequestBudgetUse(77010, budget)
+	var used []int64
+	require.NoError(t, db.Table("channel_request_budget_usages").
+		Where("channel_id = ? AND period_key = ?", 77010, model.ChannelRequestBudgetPeriodKey("day", time.Now())).
+		Pluck("used_count", &used).Error)
+	assert.Equal(t, []int64{2}, used)
+	setting := `{"request_budget":{"period":"day","limit":2}}`
+	assert.True(t, model.ChannelRequestBudgetExhausted(&model.Channel{Id: 77010, Setting: &setting}, time.Now()))
 }
 
 // hasn@92a1488ae 的正式迁移只有V001/V002；不使用新表model伪装旧发布基线。

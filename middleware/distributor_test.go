@@ -168,21 +168,32 @@ func TestTokenModelLimitAllowsLegacyAliasAndModifierVariant(t *testing.T) {
 	assert.True(t, TokenModelLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"))
 }
 
-// /v1/tools/search and /v1/tools/fetch always route and bill by the DeepSeek
-// routing names. A model named in the body is ignored: a chat model there
-// would price the call at zero tokens.
+// /v1/tools/fetch always routes and bills by the DeepSeek routing name. A
+// model named in the body is ignored: a chat model there would price the call
+// at zero tokens. /v1/tools/search 只接受两个搜索路由名：请求体没写模型时用
+// deepseek-search，写了 web-search 或 deepseek-search 就用它，其余名字回 400。
 func TestGetModelRequestAssignsDeepSeekToolRoutingNames(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, tc := range []struct{ path, body, want string }{
-		{"/v1/tools/search", `{"query":"deepseek","count":3}`, constant.DeepSeekSearchModel},
-		{"/v1/tools/fetch", `{"url":"https://example.com/"}`, constant.DeepSeekFetchModel},
-		{"/v1/tools/search", `{"query":"deepseek","model":"deepseek-flash"}`, constant.DeepSeekSearchModel},
-		{"/v1/tools/fetch", `{"url":"https://example.com/","model":"deepseek-v4-pro"}`, constant.DeepSeekFetchModel},
+	for _, tc := range []struct {
+		path, body, want string
+		wantErr          bool
+	}{
+		{path: "/v1/tools/search", body: `{"query":"deepseek","count":3}`, want: constant.DeepSeekSearchModel},
+		{path: "/v1/tools/search", body: `{"query":"deepseek","model":"web-search"}`, want: constant.WebSearchModel},
+		{path: "/v1/tools/search", body: `{"query":"deepseek","model":"deepseek-search"}`, want: constant.DeepSeekSearchModel},
+		{path: "/v1/tools/search", body: `{"query":"deepseek","model":"deepseek-flash"}`, wantErr: true},
+		{path: "/v1/tools/fetch", body: `{"url":"https://example.com/"}`, want: constant.DeepSeekFetchModel},
+		{path: "/v1/tools/fetch", body: `{"url":"https://example.com/","model":"deepseek-v4-pro"}`, want: constant.DeepSeekFetchModel},
 	} {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
+		if tc.wantErr {
+			require.Error(t, err, tc.body)
+			assert.Equal(t, http.StatusBadRequest, invalidRequestStatus(err), tc.body)
+			continue
+		}
 		require.NoError(t, err, tc.body)
 		assert.True(t, shouldSelectChannel, tc.body)
 		assert.Equal(t, tc.want, modelRequest.Model, tc.body)

@@ -50,6 +50,37 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestChannelValidateSettingsRequestBudget(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		wantErr string
+	}{
+		{name: "absent budget is unlimited", setting: `{"proxy":""}`},
+		{name: "monthly budget", setting: `{"request_budget":{"period":"month","limit":1950}}`},
+		{name: "daily budget at upper bound", setting: `{"request_budget":{"period":"day","limit":100000000}}`},
+		{name: "unknown period rejected", setting: `{"request_budget":{"period":"week","limit":10}}`, wantErr: "request_budget.period"},
+		{name: "missing period rejected", setting: `{"request_budget":{"limit":10}}`, wantErr: "request_budget.period"},
+		{name: "zero limit rejected", setting: `{"request_budget":{"period":"day","limit":0}}`, wantErr: "request_budget.limit"},
+		{name: "missing limit rejected", setting: `{"request_budget":{"period":"month"}}`, wantErr: "request_budget.limit"},
+		{name: "limit above bound rejected", setting: `{"request_budget":{"period":"month","limit":100000001}}`, wantErr: "request_budget.limit"},
+		{name: "fractional limit rejected", setting: `{"request_budget":{"period":"month","limit":1.5}}`, wantErr: "limit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{Setting: &tt.setting}
+			err := channel.ValidateSettings()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {
 	inferenceRoute := dto.AdvancedCustomRoute{
 		IncomingPath: "/v1/chat/completions",

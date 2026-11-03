@@ -164,3 +164,112 @@ func TestDeepSeekToolsHelper(t *testing.T) {
 		})
 	}
 }
+
+// /v1/tools/search 走统一处理器：提供方按渠道映射后的上游模型名选取，答复归一为统一格式；
+// 有结果按路由名单价结算一次，零结果退回预扣；上游错误归一为统一状态，400 不换渠道，
+// 其余（含提供方未登记）可换渠道，且不发出任何上游请求就失败的情形不碰上游。
+func TestWebSearchHelper(t *testing.T) {
+	service.InitHttpClient()
+	gin.SetMode(gin.TestMode)
+	batch, logConsume := common.BatchUpdateEnabled, common.LogConsumeEnabled
+	common.BatchUpdateEnabled, common.LogConsumeEnabled = true, false
+	t.Cleanup(func() { common.BatchUpdateEnabled, common.LogConsumeEnabled = batch, logConsume })
+
+	const toWSA = `{"deepseek-search":"tencent-wsa-search"}`
+	const wsaPages = `{"Response":{"RequestId":"r-1","Pages":["{\"title\":\"南极冰下\",\"url\":\"https://www.81.cn/yw_208727/16492942.html\",\"date\":\"2026/10/14 06:56:39\",\"passage\":\"冰下湖泊\",\"site\":\"中国军网\"}"],"Version":"lite"}}`
+	tests := []struct {
+		name, body, mapping string
+		upstreamStatus      int
+		upstreamBody        string
+		wantPath, wantSent  string
+		wantStatus          int
+		wantResponse        string
+		skipRetry           bool
+		settled             []int
+		refunded            bool
+	}{
+		{name: "deepseek results settle once", body: `{"model":"deepseek-search","query":"deepseek","count":2}`,
+			upstreamStatus: http.StatusOK, upstreamBody: `{"results":[{"title":"DeepSeek","url":"https://deepseek.com/","snippet":"s","rerank_score":2.1}]}`,
+			wantPath: "/v1/tools/search", wantSent: `{"query":"deepseek","count":2}`, wantStatus: http.StatusOK,
+			wantResponse: `{"results":[{"title":"DeepSeek","url":"https://deepseek.com/","snippet":"s","summary":"","site_name":""}]}`, settled: []int{375}},
+		{name: "deepseek upstream outage is retryable 502", body: `{"query":"deepseek"}`,
+			upstreamStatus: http.StatusServiceUnavailable, upstreamBody: `{"error":{"message":"busy"}}`,
+			wantPath: "/v1/tools/search", wantSent: `{"query":"deepseek","count":8}`, wantStatus: http.StatusBadGateway},
+		{name: "tencent wsa results settle once", body: `{"query":"南极 site:81.cn"}`, mapping: toWSA,
+			upstreamStatus: http.StatusOK, upstreamBody: wsaPages,
+			wantPath: "/SearchPro", wantSent: `{"Query":"南极","Site":"81.cn"}`, wantStatus: http.StatusOK,
+			wantResponse: `{"results":[{"title":"南极冰下","url":"https://www.81.cn/yw_208727/16492942.html","snippet":"冰下湖泊","summary":"冰下湖泊","site_name":"中国军网","date":"2026-10-14T06:56:39+08:00"}]}`,
+			settled:      []int{375}},
+		{name: "tencent wsa zero results refund", body: `{"query":"南极"}`, mapping: toWSA,
+			upstreamStatus: http.StatusOK, upstreamBody: `{"Response":{"RequestId":"r-2","Pages":[]}}`,
+			wantPath: "/SearchPro", wantSent: `{"Query":"南极"}`, wantStatus: http.StatusOK, wantResponse: `{"results":[]}`, refunded: true},
+		{name: "tencent wsa unauthorized answers 200 but fails 401", body: `{"query":"南极"}`, mapping: toWSA,
+			upstreamStatus: http.StatusOK, upstreamBody: `{"Response":{"Error":{"Code":"UnauthorizedOperation","Message":"未授权操作。"},"RequestId":"a546"}}`,
+			wantPath: "/SearchPro", wantSent: `{"Query":"南极"}`, wantStatus: http.StatusUnauthorized},
+		{name: "tencent wsa rejected query does not retry", body: `{"query":"南极"}`, mapping: toWSA,
+			upstreamStatus: http.StatusOK, upstreamBody: `{"Response":{"Error":{"Code":"InvalidParameter","Message":"bad"}}}`,
+			wantPath: "/SearchPro", wantSent: `{"Query":"南极"}`, wantStatus: http.StatusBadRequest, skipRetry: true},
+		{name: "operators only never reach tencent wsa", body: `{"query":"site:81.cn"}`, mapping: toWSA,
+			wantStatus: http.StatusBadRequest, skipRetry: true},
+		{name: "count out of range never reaches upstream", body: `{"query":"deepseek","count":21}`,
+			wantStatus: http.StatusBadRequest, skipRetry: true},
+		{name: "unknown provider fails retryably", body: `{"query":"deepseek"}`, mapping: `{"deepseek-search":"gpt-4o"}`,
+			wantStatus: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotAuth string
+			var gotBody []byte
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.upstreamStatus)
+				_, _ = io.WriteString(w, tc.upstreamBody)
+			}))
+			t.Cleanup(upstream.Close)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/tools/search", strings.NewReader(tc.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, constant.DeepSeekSearchModel)
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeDeepSeek)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+			common.SetContextKey(c, constant.ContextKeyChannelKey, "sk-test")
+			if tc.mapping != "" {
+				c.Set("model_mapping", tc.mapping)
+			}
+
+			request, err := helper.GetAndValidateRequest(c, types.RelayFormatDeepSeekTools)
+			require.NoError(t, err)
+			info, err := relaycommon.GenRelayInfo(c, types.RelayFormatDeepSeekTools, request, nil)
+			require.NoError(t, err)
+			info.BillingRequestInput = &billingexpr.RequestInput{Body: []byte(tc.body)}
+			_, err = helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
+			require.NoError(t, err)
+			settlement := &recordedSettlement{}
+			info.Billing = settlement
+
+			apiErr := WebSearchHelper(c, info)
+			assert.Equal(t, tc.wantPath, gotPath)
+			if tc.wantSent != "" {
+				assert.JSONEq(t, tc.wantSent, string(gotBody))
+				assert.Equal(t, "Bearer sk-test", gotAuth)
+			}
+			assert.Equal(t, tc.settled, settlement.settled)
+			assert.Equal(t, tc.refunded, settlement.refunded)
+			if tc.wantStatus != http.StatusOK {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.wantStatus, apiErr.StatusCode)
+				assert.Equal(t, tc.skipRetry, types.IsSkipRetryError(apiErr))
+				assert.False(t, types.IsChannelError(apiErr), "ordinary search failures must not auto-disable the channel")
+				return
+			}
+			require.Nil(t, apiErr)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.JSONEq(t, tc.wantResponse, recorder.Body.String())
+		})
+	}
+}

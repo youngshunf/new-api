@@ -215,7 +215,7 @@ func verifyTargetSchema(db *gorm.DB) error {
 	if !db.Migrator().HasColumn("tokens", "allow_user_quota_query") {
 		return fmt.Errorf("缺少目标列：tokens.allow_user_quota_query")
 	}
-	return nil
+	return verifyDeclaredTable(db, "V006__渠道每期调用计数.sql", "channel_request_budget_usages")
 }
 
 func verifyAudioSchema(db *gorm.DB) error {
@@ -302,6 +302,20 @@ func verifyDeclaredTable(db *gorm.DB, migration, table string) error {
 	for _, line := range strings.Split(body, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) < 2 || strings.HasPrefix(fields[0], "UNIQUE") {
+			continue
+		}
+		// 表级复合主键：逐列核实际主键标记，不计入列数。
+		if fields[0] == "PRIMARY" {
+			list := line[strings.Index(line, "(")+1 : strings.LastIndex(line, ")")]
+			for name := range strings.SplitSeq(list, ",") {
+				column, ok := actual[strings.TrimSpace(name)]
+				if !ok {
+					return fmt.Errorf("缺少目标主键列：%s.%s", table, strings.TrimSpace(name))
+				}
+				if primary, known := column.PrimaryKey(); known && !primary {
+					return fmt.Errorf("目标主键错误：%s.%s", table, column.Name())
+				}
+			}
 			continue
 		}
 		expected++

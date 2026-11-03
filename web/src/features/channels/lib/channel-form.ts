@@ -82,6 +82,28 @@ function isOptionalProxyURL(value: string | undefined): boolean {
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
+// 每期调用上限：与后端 dto.MaxChannelRequestBudgetLimit 一致，'none' 表示不限（不写入 setting）
+export const REQUEST_BUDGET_PERIODS = ['none', 'day', 'month'] as const
+export type RequestBudgetPeriod = (typeof REQUEST_BUDGET_PERIODS)[number]
+export const MAX_REQUEST_BUDGET_LIMIT = 100000000
+
+function readRequestBudget(value: unknown): {
+  request_budget_period: RequestBudgetPeriod
+  request_budget_limit: number | undefined
+} {
+  const budget =
+    value && typeof value === 'object'
+      ? (value as { period?: unknown; limit?: unknown })
+      : undefined
+  if (budget?.period !== 'day' && budget?.period !== 'month') {
+    return { request_budget_period: 'none', request_budget_limit: undefined }
+  }
+  return {
+    request_budget_period: budget.period,
+    request_budget_limit:
+      typeof budget.limit === 'number' ? budget.limit : undefined,
+  }
+}
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -270,6 +292,8 @@ export const channelFormSchema = z
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
     tls_insecure_skip_verify: z.boolean().optional(),
+    request_budget_period: z.enum(REQUEST_BUDGET_PERIODS).optional(),
+    request_budget_limit: z.number().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
@@ -421,6 +445,21 @@ export const channelFormSchema = z
         ERROR_MESSAGES.INVALID_HTTP1_WITH_SHARDS
       )
     }
+
+    const budgetLimit = data.request_budget_limit
+    if (
+      (data.request_budget_period ?? 'none') !== 'none' &&
+      (budgetLimit === undefined ||
+        !Number.isInteger(budgetLimit) ||
+        budgetLimit < 1 ||
+        budgetLimit > MAX_REQUEST_BUDGET_LIMIT)
+    ) {
+      addRequiredIssue(
+        ctx,
+        'request_budget_limit',
+        ERROR_MESSAGES.INVALID_REQUEST_BUDGET_LIMIT
+      )
+    }
   })
 
 export type ChannelFormValues = z.infer<typeof channelFormSchema>
@@ -464,6 +503,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
   tls_insecure_skip_verify: false,
+  request_budget_period: 'none',
+  request_budget_limit: undefined,
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
   system_prompt: '',
@@ -511,6 +552,7 @@ export function transformChannelToFormDefaults(
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
     tls_insecure_skip_verify: false,
+    ...readRequestBudget(undefined),
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
     system_prompt: '',
@@ -533,6 +575,7 @@ export function transformChannelToFormDefaults(
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         tls_insecure_skip_verify: parsed.tls_insecure_skip_verify === true,
+        ...readRequestBudget(parsed.request_budget),
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
@@ -692,6 +735,16 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
   }
   if (formData.tls_insecure_skip_verify === true) {
     settingObj.tls_insecure_skip_verify = true
+  }
+  // 「不限」时不写 request_budget，后端即视为无上限
+  if (
+    formData.request_budget_period === 'day' ||
+    formData.request_budget_period === 'month'
+  ) {
+    settingObj.request_budget = {
+      period: formData.request_budget_period,
+      limit: formData.request_budget_limit,
+    }
   }
 
   return JSON.stringify(settingObj)

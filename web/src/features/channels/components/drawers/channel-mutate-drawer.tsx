@@ -607,6 +607,7 @@ export function ChannelMutateDrawer({
   const currentHeaderOverride = formValues.header_override
   const currentProxy = formValues.proxy
   const currentHttpProtocol = formValues.http_protocol
+  const currentRequestBudgetPeriod = formValues.request_budget_period
   const {
     unlocked: doubaoApiEditUnlocked,
     handleClick: handleApiConfigSecretClick,
@@ -2241,6 +2242,85 @@ export function ChannelMutateDrawer({
                 />
               </FormControl>
               <FormDescription>{t(FIELD_DESCRIPTIONS.WEIGHT)}</FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      </div>
+
+      <div className='grid gap-4 sm:grid-cols-2'>
+        <FormField
+          control={form.control}
+          name='request_budget_period'
+          render={({ field }) => {
+            const periodItems = [
+              { value: 'none', label: t('No limit') },
+              { value: 'day', label: t('Per day') },
+              { value: 'month', label: t('Per month') },
+            ]
+            return (
+              <FormItem>
+                <FormLabel>{t('Request budget')}</FormLabel>
+                <Select
+                  items={periodItems}
+                  value={field.value || 'none'}
+                  onValueChange={(value) => {
+                    field.onChange(
+                      value === 'day' || value === 'month' ? value : 'none'
+                    )
+                    form.trigger('request_budget_limit')
+                  }}
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      {periodItems.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(
+                    'Counted by Beijing calendar day or month. Once the limit is used up, this channel is not selected for the rest of the period.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )
+          }}
+        />
+
+        <FormField
+          control={form.control}
+          name='request_budget_limit'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Call count')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min={1}
+                  step={1}
+                  placeholder='1950'
+                  disabled={(currentRequestBudgetPeriod ?? 'none') === 'none'}
+                  name={field.name}
+                  ref={field.ref}
+                  onBlur={field.onBlur}
+                  value={field.value ?? ''}
+                  onChange={(e) =>
+                    field.onChange(
+                      e.target.value === '' ? undefined : Number(e.target.value)
+                    )
+                  }
+                />
+              </FormControl>
               <FormMessage />
             </FormItem>
           )}
