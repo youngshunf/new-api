@@ -46,7 +46,7 @@ func TestParseRequest(t *testing.T) {
 }
 
 func TestProviderForRegisteredUpstreamModels(t *testing.T) {
-	for _, name := range []string{"deepseek-search", "tencent-wsa-search"} {
+	for _, name := range []string{"deepseek-search", "tencent-wsa-search", "tavily-search"} {
 		_, ok := ProviderFor(name)
 		assert.True(t, ok, name)
 	}
@@ -190,6 +190,94 @@ func TestDeepSeekParseResponse(t *testing.T) {
 		{http.StatusOK, `{"data":[]}`, http.StatusBadGateway},
 	} {
 		_, searchErr := provider.ParseResponse(context.Background(), tc.status, []byte(tc.body), SearchRequest{Query: "q", Count: 8})
+		require.NotNil(t, searchErr, tc.status)
+		assert.Equal(t, tc.want, searchErr.Status, "%d %s", tc.status, tc.body)
+	}
+}
+
+// Tavily 运算符翻译：全部 site:/-site: 都保留，日期原样转起止日，无效日期留作查询词。
+func TestTranslateTavilyQuery(t *testing.T) {
+	tests := []struct {
+		name, query string
+		want        tavilyRequest
+		wantStatus  int
+	}{
+		{name: "plain text", query: "南极  冰下", want: tavilyRequest{Query: "南极 冰下"}},
+		{name: "all sites and exclusions", query: "site:a.com 南极 site:b.com -site:c.com -site:d.com",
+			want: tavilyRequest{Query: "南极", IncludeDomains: []string{"a.com", "b.com"}, ExcludeDomains: []string{"c.com", "d.com"}}},
+		{name: "dates", query: "after:2026-10-01 南极 before:2026-10-31 lang:zh",
+			want: tavilyRequest{Query: "南极", StartDate: "2026-10-01", EndDate: "2026-10-31"}},
+		{name: "malformed date stays as text", query: "after:2026/10/01 南极", want: tavilyRequest{Query: "after:2026/10/01 南极"}},
+		{name: "quoted phrase kept", query: `"site:x 冰下" 湖泊`, want: tavilyRequest{Query: `"site:x 冰下" 湖泊`}},
+		{name: "only operators", query: "site:a.com before:2026-10-31", wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, searchErr := translateTavilyQuery(SearchRequest{Query: tc.query, Count: 5})
+			if tc.wantStatus != 0 {
+				require.NotNil(t, searchErr)
+				assert.Equal(t, tc.wantStatus, searchErr.Status)
+				return
+			}
+			require.Nil(t, searchErr)
+			tc.want.MaxResults, tc.want.SearchDepth, tc.want.IncludePublishedDate = 5, "basic", true
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// Tavily 请求：渠道地址优先、Bearer key，固定 basic 深度并要发布日期，count 直接作 max_results。
+func TestTavilyBuildRequest(t *testing.T) {
+	req, searchErr := tavilyProvider{}.BuildRequest(context.Background(), "https://proxy.example/", "tvly-key", SearchRequest{Query: "南极 site:81.cn after:2026-10-01", Count: 3})
+	require.Nil(t, searchErr)
+	assert.Equal(t, "https://proxy.example/search", req.URL.String())
+	assert.Equal(t, "Bearer tvly-key", req.Header.Get("Authorization"))
+	assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	body, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"query":"南极","max_results":3,"search_depth":"basic","include_published_date":true,"include_domains":["81.cn"],"start_date":"2026-10-01"}`, string(body))
+
+	req, searchErr = tavilyProvider{}.BuildRequest(context.Background(), "", "tvly-key", SearchRequest{Query: "南极", Count: 3})
+	require.Nil(t, searchErr)
+	assert.Equal(t, "https://api.tavily.com/search", req.URL.String())
+}
+
+func TestTavilyParseResponse(t *testing.T) {
+	body := `{"query":"q","results":[` +
+		`{"title":"销量","url":"https://www.36kr.com/p/1","content":"摘要一","score":0.9,"published_date":"Mon, 01 Dec 2025 00:00:00 GMT"},` +
+		`{"title":"二","url":"https://finance.sina.com.cn/2","content":"摘要二","published_date":null},` +
+		`{"title":"三","url":"https://three.example/","content":"c"}],"usage":{"credits":1}}`
+	got, searchErr := tavilyProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(body), SearchRequest{Query: "q", Count: 2})
+	require.Nil(t, searchErr)
+	assert.Equal(t, []SearchResult{
+		{Title: "销量", URL: "https://www.36kr.com/p/1", Snippet: "摘要一", Summary: "摘要一", SiteName: "36kr.com", Date: "2025-12-01T00:00:00Z"},
+		{Title: "二", URL: "https://finance.sina.com.cn/2", Snippet: "摘要二", Summary: "摘要二", SiteName: "finance.sina.com.cn"},
+	}, got.Results)
+
+	got, searchErr = tavilyProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(`{"results":[]}`), SearchRequest{Query: "q", Count: 8})
+	require.Nil(t, searchErr)
+	encoded, err := common.Marshal(got)
+	require.NoError(t, err)
+	assert.Equal(t, `{"results":[]}`, string(encoded))
+}
+
+func TestTavilyErrorStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   int
+	}{
+		{http.StatusBadRequest, `{"detail":{"error":"bad query"}}`, http.StatusBadRequest},
+		{http.StatusUnauthorized, `{"detail":{"error":"Unauthorized: missing or invalid API key."}}`, http.StatusUnauthorized},
+		{http.StatusForbidden, ``, http.StatusUnauthorized},
+		{432, `{"detail":{"error":"This request exceeds your plan's set usage limit."}}`, http.StatusPaymentRequired},
+		{433, `{"detail":{"error":"This request exceeds the pay-as-you-go limit."}}`, http.StatusPaymentRequired},
+		{http.StatusTooManyRequests, ``, http.StatusTooManyRequests},
+		{http.StatusInternalServerError, ``, http.StatusBadGateway},
+		{http.StatusOK, `{"results":null}`, http.StatusBadGateway},
+		{http.StatusOK, `<html>`, http.StatusBadGateway},
+	} {
+		_, searchErr := tavilyProvider{}.ParseResponse(context.Background(), tc.status, []byte(tc.body), SearchRequest{Query: "q", Count: 8})
 		require.NotNil(t, searchErr, tc.status)
 		assert.Equal(t, tc.want, searchErr.Status, "%d %s", tc.status, tc.body)
 	}
