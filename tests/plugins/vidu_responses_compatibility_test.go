@@ -50,7 +50,7 @@ func TestViduResponsesDecodeThenSubmitCompatibility(t *testing.T) {
 		"url":"http://127.0.0.1:1/ent/v2/start-end2video","method":"POST","action":"first_tail_to_video",
 		"headers":{"Content-Type":"application/json","Accept":"application/json","Authorization":"Token unit-test-key"},
 		"body":{"model":"viduq2","images":["https://cdn.example/first.png","https://cdn.example/last.png"],
-			"prompt":"move between frames","duration":8,"resolution":"720p","movement_amplitude":"auto"}
+			"prompt":"move between frames","duration":8,"resolution":"720p"}
 	}`, string(encoded), "Responses旧形必须经真实build保留首尾动作、图序、数值和完整供应商描述")
 }
 

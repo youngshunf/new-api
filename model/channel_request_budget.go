@@ -112,6 +112,10 @@ func ChannelRequestBudgetExhausted(channel *Channel, now time.Time) bool {
 // reloadChannelRequestBudgetUsages 从库里重载当前分期（北京时间今日与本月）的计数快照。
 // 同一分期计数只增不减，所以与快照取大，避免覆盖重载期间本实例刚加的一次。
 func reloadChannelRequestBudgetUsages(now time.Time) {
+	// 库尚未初始化（启动早期或测试还原 DB）时无从重载，保留现有快照。
+	if DB == nil {
+		return
+	}
 	dayKey := ChannelRequestBudgetPeriodKey(dto.ChannelRequestBudgetPeriodDay, now)
 	monthKey := ChannelRequestBudgetPeriodKey(dto.ChannelRequestBudgetPeriodMonth, now)
 	var rows []struct {

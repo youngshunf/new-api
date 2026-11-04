@@ -7,10 +7,27 @@ export const meta = {
     en: "Shengshu Vidu video generation (text-to-video, image-to-video, first-and-last-frame, and reference-to-video)",
     zh: "生数 Vidu 视频生成（文生视频、图生视频、首尾帧、参考生视频）",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "QuantumNous" },
   channelTypes: [52],
-  models: ["viduq2", "viduq1", "vidu2.0", "vidu1.5"],
+  models: [
+    "viduq3-pro",
+    "viduq3-turbo",
+    "viduq3-pro-fast",
+    "viduq3",
+    "viduq3-mix",
+    "viduq3-ad",
+    "viduq3-drama",
+    "viduq4-preview",
+    "viduq2-pro",
+    "viduq2-turbo",
+    "viduq2-pro-fast",
+    "viduq2",
+    "viduq1-classic",
+    "viduq1",
+    "vidu2.0",
+    "vidu1.5",
+  ],
   fetchMode: "per_task",
   upstreams: ["vendor", "new_api"],
   usageSchema: {
@@ -28,12 +45,14 @@ export const meta = {
     },
     // Requested output video resolution.
     resolution: {
-      enum: ["360p", "540p", "720p", "1080p"],
+      enum: ["360p", "540p", "720p", "1080p", "2K", "4K"],
       enumLabels: {
         "360p": { en: "360p", zh: "360p" },
         "540p": { en: "540p", zh: "540p" },
         "720p": { en: "720p", zh: "720p" },
         "1080p": { en: "1080p", zh: "1080p" },
+        "2K": { en: "2K", zh: "2K" },
+        "4K": { en: "4K", zh: "4K" },
       },
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
     },
@@ -41,25 +60,91 @@ export const meta = {
   // credits is 0 in examples because this plugin does not estimate vendor credits;
   // schema completeness requires the key. Actual credits arrive from upstream.
   usageExamples: [
+    { label: "q4 5s 4K", facts: { credits: 0, duration: 5, resolution: "4K" } },
+    { label: "q3 pro 5s 1080p", facts: { credits: 0, duration: 5, resolution: "1080p" } },
     { label: "q2 5s 720p", facts: { credits: 0, duration: 5, resolution: "720p" } },
     { label: "q1 5s 1080p", facts: { credits: 0, duration: 5, resolution: "1080p" } },
     { label: "2.0 4s 360p", facts: { credits: 0, duration: 4, resolution: "360p" } },
-    { label: "2.0 4s 720p", facts: { credits: 0, duration: 4, resolution: "720p" } },
     { label: "2.0 8s 720p", facts: { credits: 0, duration: 8, resolution: "720p" } },
   ],
   // Vidu request and response bodies, for clients and for a downstream New API
-  // gateway.
+  // gateway, at Vidu's own paths; the gateway also serves each under /vidu.
   routes: [
-    { method: "POST", path: "/vidu/ent/v2/text2video", type: "submit", decode: "createTask", render: "taskCreated" },
-    { method: "POST", path: "/vidu/ent/v2/img2video", type: "submit", decode: "createTask", render: "taskCreated" },
-    { method: "POST", path: "/vidu/ent/v2/start-end2video", type: "submit", decode: "createTask", render: "taskCreated" },
-    { method: "POST", path: "/vidu/ent/v2/reference2video", type: "submit", decode: "createTask", render: "taskCreated" },
-    { method: "GET", path: "/vidu/ent/v2/tasks/:task_id/creations", type: "query", render: "taskStatus" },
+    { method: "POST", path: "/ent/v2/text2video", type: "submit", decode: "createTask", render: "taskCreated" },
+    { method: "POST", path: "/ent/v2/img2video", type: "submit", decode: "createTask", render: "taskCreated" },
+    { method: "POST", path: "/ent/v2/start-end2video", type: "submit", decode: "createTask", render: "taskCreated" },
+    { method: "POST", path: "/ent/v2/reference2video", type: "submit", decode: "createTask", render: "taskCreated" },
+    { method: "GET", path: "/ent/v2/tasks/:task_id/creations", type: "query", render: "taskStatus" },
   ],
   protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
 };
 
-const RESOLUTIONS = ["360p", "540p", "720p", "1080p"];
+// The models of each Vidu endpoint with their durations (shortest, longest,
+// default) and resolutions, the default first, from
+// platform.vidu.com/docs/api-reference/video-models; vidu2.0 from the pricing
+// page, where 8 seconds come only in 720p. Vidu checks requests itself; the
+// lists give the defaults it renders and the dearest a request can cost.
+const Q4 = { durations: [3, 16, 5], resolutions: ["720p", "540p", "1080p", "2K", "4K"] };
+const Q3 = { durations: [1, 16, 5], resolutions: ["720p", "540p", "1080p"] };
+const Q3_FAST = { durations: [1, 16, 5], resolutions: ["720p", "1080p"] };
+const Q3_REFERENCE = { durations: [3, 16, 5], resolutions: ["720p", "540p", "1080p"] };
+const Q3_SCENE = { durations: [3, 15, 5], resolutions: ["720p", "1080p"] };
+const Q2 = { durations: [1, 10, 5], resolutions: ["720p", "540p", "1080p"] };
+const Q2_FRAMES = { durations: [1, 10, 5], resolutions: ["720p", "360p", "540p", "1080p"] };
+const Q2_FAST = { durations: [1, 10, 5], resolutions: ["720p", "1080p"] };
+const Q1 = { durations: [5, 5, 5], resolutions: ["1080p"] };
+const VIDU2 = { durations: [4, 8, 4], resolutions: ["360p", "720p", "1080p"], longest: ["720p"] };
+// Vidu has started taking vidu1.5 offline (platform.vidu.com/docs/pricing)
+// without a shutdown date; drop it once Vidu does. Its image-to-video page
+// (api-reference/video-models/vidu-1-5/image-to-video) gives vidu2.0's
+// durations and resolutions; the other endpoints come from the last docs that
+// listed vidu1.5, where reference-to-video also takes 8 seconds and 1080p.
+const VIDU1_5 = VIDU2;
+const ENDPOINT_MODELS = {
+  text_to_video: { "viduq3-pro": Q3, "viduq3-turbo": Q3, viduq2: Q2, viduq1: Q1, "vidu1.5": VIDU1_5 },
+  image_to_video: {
+    "viduq4-preview": Q4,
+    "viduq3-pro": Q3,
+    "viduq3-turbo": Q3,
+    "viduq3-pro-fast": Q3_FAST,
+    "viduq2-pro": Q2,
+    "viduq2-turbo": Q2,
+    "viduq1-classic": Q1,
+    viduq1: Q1,
+    "vidu2.0": VIDU2,
+    "vidu1.5": VIDU1_5,
+  },
+  first_tail_to_video: {
+    "viduq3-pro": Q3,
+    "viduq3-turbo": Q3,
+    "viduq3-pro-fast": Q3_FAST,
+    "viduq2-pro": Q2_FRAMES,
+    "viduq2-turbo": Q2_FRAMES,
+    "viduq2-pro-fast": Q2_FAST,
+    viduq1: Q1,
+    "viduq1-classic": Q1,
+    "vidu2.0": VIDU2,
+    "vidu1.5": VIDU1_5,
+  },
+  reference_to_video: {
+    "viduq4-preview": Q4,
+    viduq3: Q3_REFERENCE,
+    "viduq3-turbo": Q3_REFERENCE,
+    "viduq3-mix": Q3_SCENE,
+    "viduq3-ad": Q3_SCENE,
+    "viduq3-drama": { durations: [2, 16, 8], resolutions: ["1080p", "720p"] },
+    "viduq2-pro": Q2,
+    viduq2: Q2,
+    viduq1: Q1,
+    "vidu2.0": { durations: [4, 4, 4], resolutions: ["360p", "720p"] },
+    "vidu1.5": VIDU1_5,
+  },
+};
+// Vidu's resolutions from the cheapest to the dearest.
+const RESOLUTIONS = ["360p", "540p", "720p", "1080p", "2K", "4K"];
+// The defaults of Vidu's current models with every resolution, for a
+// host-protocol request whose model the endpoint does not list.
+const WIDEST = { durations: [1, 16, 5], resolutions: ["720p", "360p", "540p", "1080p", "2K", "4K"] };
 
 // The submit route names the action; one or two reference images would
 // otherwise read as image-to-video or first-and-last-frame.
@@ -79,8 +164,8 @@ function plainObject(value) {
 }
 
 // On a New API channel the same plugin answers on another gateway, which
-// serves the Vidu wire format on the prefixed native routes and takes its own
-// token as a Bearer header.
+// serves the Vidu wire format under /vidu, the form every gateway release
+// serves, and takes its own token as a Bearer header.
 function viaGateway(ctx) {
   return Boolean(ctx.upstream && ctx.upstream.kind === "new_api");
 }
@@ -93,90 +178,74 @@ function authorization(ctx) {
   return (viaGateway(ctx) ? "Bearer " : "Token ") + ctx.apiKey;
 }
 
-function isQ2Model(model) {
-  return String(model || "").indexOf("viduq2") === 0;
+function listedProfile(action, model) {
+  const models = ENDPOINT_MODELS[action] || {};
+  return Object.prototype.hasOwnProperty.call(models, model) ? models[model] : null;
 }
 
-function defaultDuration(model) {
-  if (model === "vidu2.0") return 4;
-  return 5;
-}
-
-function defaultResolution(model) {
-  if (isQ2Model(model)) return "720p";
-  if (model === "vidu2.0") return "360p";
-  return "1080p";
-}
-
-function normalizeResolution(value, model) {
-  if (model === "viduq1") return "1080p";
-  const raw = trimmed(value).toLowerCase();
-  if (RESOLUTIONS.indexOf(raw) >= 0) return raw;
-  const parts = raw.replace("*", "x").split("x");
-  if (parts.length === 2) {
-    const width = Number(parts[0]);
-    const height = Number(parts[1]);
-    if (width > 0 && height > 0) {
-      const max = Math.max(width, height);
-      if (max >= 1920) return "1080p";
-      if (max >= 1280) return "720p";
-      if (max >= 960) return "540p";
-      return "360p";
+// The longest duration and dearest resolution of a model on an endpoint. A
+// model listed only on other endpoints takes those of all of them, and a
+// model the plugin does not list those of every Vidu model.
+function dearestSettings(action, model) {
+  let profiles = [listedProfile(action, model)];
+  if (!profiles[0]) profiles = Object.keys(ENDPOINT_MODELS).map((name) => listedProfile(name, model)).filter(Boolean);
+  if (!profiles.length) {
+    for (const name of Object.keys(ENDPOINT_MODELS)) profiles = profiles.concat(Object.keys(ENDPOINT_MODELS[name]).map((key) => ENDPOINT_MODELS[name][key]));
+  }
+  const settings = { duration: 0, resolution: RESOLUTIONS[0] };
+  for (const profile of profiles) {
+    settings.duration = Math.max(settings.duration, profile.durations[1]);
+    for (const tier of profile.resolutions) {
+      if (RESOLUTIONS.indexOf(tier) > RESOLUTIONS.indexOf(settings.resolution)) settings.resolution = tier;
     }
   }
-  return defaultResolution(model);
+  return settings;
 }
 
-function outboundDuration(req, model) {
-  const n = Number(req && req.duration);
-  if (Number.isFinite(n) && n > 0) return n;
-  return defaultDuration(model);
+// The duration and resolution a native request is reserved for: those the
+// plugin can read from the body, the model's defaults on the endpoint when
+// the body leaves them out, and otherwise the dearest the model renders.
+function nativeSettings(action, model, body) {
+  const listed = listedProfile(action, model);
+  const settings = dearestSettings(action, model);
+  const seconds = typeof body.duration === "number" || typeof body.duration === "string" ? Number(body.duration) : NaN;
+  let durationKnown = true;
+  if (Number.isInteger(seconds) && seconds > 0 && seconds <= 3600) settings.duration = seconds;
+  else if ((body.duration === undefined || body.duration === null) && listed) settings.duration = listed.durations[2];
+  else durationKnown = false;
+  const tier = RESOLUTIONS.find((item) => item.toLowerCase() === trimmed(body.resolution).toLowerCase());
+  if (tier) settings.resolution = tier;
+  else if ((body.resolution === undefined || body.resolution === null) && listed && durationKnown)
+    settings.resolution = listed.longest && settings.duration === listed.durations[1] ? listed.longest[0] : listed.resolutions[0];
+  return settings;
 }
 
-function outboundResolution(req, model) {
-  if (req && req.resolution) return normalizeResolution(req.resolution, model);
+// The host protocols map an OpenAI size or a tier in any case onto the
+// model's resolutions; an unknown value keeps the model's default.
+function mappedResolution(value, resolutions) {
+  const raw = trimmed(value);
+  if (!raw) return undefined;
+  const tier = resolutions.find((item) => item.toLowerCase() === raw.toLowerCase());
+  if (tier) return tier;
+  const parts = raw.toLowerCase().replace("*", "x").split("x");
+  const width = Number(parts[0]);
+  const height = Number(parts[1]);
+  if (parts.length !== 2 || !(width > 0) || !(height > 0)) return undefined;
+  const longer = Math.max(width, height);
+  const wanted = longer >= 3840 ? "4K" : longer >= 2560 ? "2K" : longer >= 1920 ? "1080p" : longer >= 1280 ? "720p" : longer >= 960 ? "540p" : "360p";
+  return resolutions.includes(wanted) ? wanted : undefined;
+}
+
+// The duration and resolution a host-protocol or legacy request sends Vidu:
+// the request's, whose size or resolution may sit in metadata, or the model's
+// defaults on the endpoint. Vidu checks them for the model.
+function requestSettings(req, action, model) {
+  const profile = listedProfile(action, model) || WIDEST;
+  const duration = req.duration === undefined || req.duration === null || req.duration === "" ? profile.durations[2] : Number(req.duration);
+  if (!Number.isInteger(duration) || duration <= 0 || duration > 3600) throw new Error("seconds must be between 1 and 3600");
+  const resolutions = profile.longest && duration === profile.durations[1] ? profile.longest : profile.resolutions;
   const metadata = (req && req.metadata) || {};
-  if (metadata.resolution) return normalizeResolution(metadata.resolution, model);
-  if (req && req.size) return normalizeResolution(req.size, model);
-  return defaultResolution(model);
-}
-
-function hasViduImages(req, hasInputReferenceFile) {
-  if (hasInputReferenceFile) return true;
-  if (Array.isArray(req && req.images) && req.images.length) return true;
-  return Boolean(trimmed(req && req.input_reference) || trimmed(req && req.image));
-}
-
-function validateViduCombo(model, duration, resolution, hasImages) {
-  if (model === "vidu2.0" && !hasImages) {
-    throw new Error("vidu2.0 does not support text-to-video");
-  }
-  if (model === "viduq1") {
-    if (duration !== undefined && Number(duration) !== 5) throw new Error("viduq1 duration must be 5");
-    return;
-  }
-  if (model === "vidu2.0") {
-    const n = duration === undefined ? 4 : Number(duration);
-    if (n === 4) {
-      if (["360p", "720p", "1080p"].indexOf(resolution) < 0) throw new Error("vidu2.0 duration 4 only allows resolution 360p, 720p, or 1080p");
-      return;
-    }
-    if (n === 8) {
-      if (resolution !== "720p") throw new Error("vidu2.0 duration 8 only allows resolution 720p");
-      return;
-    }
-    throw new Error("vidu2.0 duration must be 4 or 8");
-  }
-  if (isQ2Model(model)) {
-    if (duration === undefined) return;
-    const n = Number(duration);
-    if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error("viduq2 duration must be between 1 and 10");
-    return;
-  }
-  if (duration !== undefined) {
-    const n = Number(duration);
-    if (!Number.isInteger(n) || n <= 0 || n > 3600) throw new Error("seconds must be between 1 and 3600");
-  }
+  return { duration: duration, resolution: mappedResolution(req.resolution || metadata.resolution || req.size, resolutions) || resolutions[0] };
 }
 
 function filePlaceholder(image) {
@@ -233,7 +302,74 @@ function responsesVideoText(ctx) {
   return '<video controls src="' + escaped + '"></video>';
 }
 
+// 宿主规范视频请求（generation_mode + 图片角色字段）：任一规范字段在场即按规范形态处理，
+// 返回动作与按角色排好的图片；不是规范形态时返回 null。规范形态禁止混用旧字段，
+// 也不因空值退回历史推断。
+function canonicalVideoRoles(req) {
+  const canonical = ["generation_mode", "reference_images", "first_frame", "last_frame"].some(function (name) {
+    return Object.prototype.hasOwnProperty.call(req, name);
+  });
+  if (!canonical) return null;
+  for (const name of ["mode", "image", "images", "input_reference", "metadata", "action"]) {
+    if (Object.prototype.hasOwnProperty.call(req, name)) throw new Error("canonical request cannot contain " + name);
+  }
+  const hasReferences = Object.prototype.hasOwnProperty.call(req, "reference_images");
+  const hasFirst = Object.prototype.hasOwnProperty.call(req, "first_frame");
+  const hasLast = Object.prototype.hasOwnProperty.call(req, "last_frame");
+  let action, images;
+  switch (req.generation_mode) {
+    case "text_to_video":
+      if (hasReferences || hasFirst || hasLast) throw new Error("text_to_video forbids image roles");
+      action = "text_to_video";
+      images = null;
+      break;
+    case "reference_to_video":
+      if (hasFirst || hasLast) throw new Error("reference_to_video forbids frame roles");
+      if (!Array.isArray(req.reference_images) || req.reference_images.length < 1 || req.reference_images.length > 16)
+        throw new Error("reference_images must contain 1 to 16 file placeholders");
+      action = "reference_to_video";
+      images = req.reference_images;
+      break;
+    case "first_frame_to_video":
+      if (hasReferences || hasLast) throw new Error("first_frame_to_video forbids reference_images and last_frame");
+      if (!hasFirst) throw new Error("first_frame is required");
+      action = "image_to_video";
+      images = [req.first_frame];
+      break;
+    case "first_last_frame_to_video":
+      if (hasReferences) throw new Error("first_last_frame_to_video forbids reference_images");
+      if (!hasFirst || !hasLast) throw new Error("first_frame and last_frame are required");
+      action = "first_tail_to_video";
+      images = [req.first_frame, req.last_frame];
+      break;
+    default:
+      throw new Error("generation_mode must be an explicit canonical video mode");
+  }
+  const seen = new Set();
+  for (const [index, image] of (images || []).entries()) {
+    // 宿主已准入的内部占位对象仍核封闭形状；此处不替代真实文件/MIME/预算核验。
+    if (!image || typeof image !== "object" || Array.isArray(image)) throw new Error("image role must be a file placeholder");
+    for (const name of Object.keys(image)) {
+      if (!["__fileRef", "encoding", "mimeType", "maxBytes"].includes(name)) throw new Error("invalid image file placeholder field: " + name);
+    }
+    if (typeof image.__fileRef !== "string" || image.encoding !== "dataUrl") throw new Error("invalid image file placeholder");
+    if (seen.has(image.__fileRef)) throw new Error("duplicate image file reference");
+    seen.add(image.__fileRef);
+    const expected = action === "reference_to_video" ? "reference_image_" + index : index === 0 ? "first_frame" : "last_frame";
+    if (image.__fileRef !== "request_file:" + expected) throw new Error("image file reference must match role " + expected);
+    if (!Number.isInteger(image.maxBytes) || image.maxBytes <= 0 || image.maxBytes > 15728640)
+      throw new Error("image file placeholder maxBytes must be between 1 and 15728640");
+    if (image.mimeType !== "image/png" && image.mimeType !== "image/jpeg")
+      throw new Error("image file placeholder mimeType must be image/png or image/jpeg");
+  }
+  return { action: action, images: images };
+}
+
 function actionFor(req) {
+  if (req.vendorBody) return req.action;
+  // 规范形态的动作由 generation_mode 定，预留与发送同取此动作。
+  const canonical = canonicalVideoRoles(req);
+  if (canonical) return canonical.action;
   if (req.metadata && req.metadata.action) {
     const aliases = {
       generate: "image_to_video",
@@ -257,34 +393,39 @@ function pathFor(action) {
   return "/text2video";
 }
 
+// The fields of Vidu's query reply (GET /ent/v2/tasks/{id}/creations); the
+// create reply shares some of them under other names.
+const QUERY_FIELDS = ["state", "err_code", "credits", "payload", "bgm", "off_peak", "creations"];
+
 export const native = {
+  // Vidu's own body, sent as is for Vidu to check. The route names the
+  // endpoint.
   createTask: function (ctx) {
     if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
     const body = plainObject(ctx.body.value);
     if (!body) throw new Error("request body must be an object");
     const model = trimmed(body.model);
     if (!model) throw new Error("model is required");
+    if (body.callback_url !== undefined && body.callback_url !== null) throw new Error("callback_url is not supported; query the task instead");
     const action = ROUTE_ACTIONS[ctx.path.slice(ctx.path.lastIndexOf("/") + 1)];
-    // The other Vidu fields ride in metadata, which buildSubmitRequest
-    // spreads back into the body.
-    const metadata = Object.assign({}, body, { action: action });
-    const requestBody = { model: model, metadata: metadata };
-    delete metadata.model;
-    for (const key of ["images", "prompt", "duration", "resolution"]) {
-      delete metadata[key];
-      if (body[key] !== undefined && body[key] !== null) requestBody[key] = body[key];
-    }
-    const duration = requestBody.duration === undefined ? undefined : Number(requestBody.duration);
-    validateViduCombo(model, duration, outboundResolution(requestBody, model), hasViduImages(requestBody, false));
-    return { kind: "submit", model: model, action: action, requestBody: requestBody };
+    return { kind: "submit", model: model, action: action, requestBody: { model: model, action: action, vendorBody: body } };
   },
   taskCreated: function (ctx, task) {
     return Object.assign({}, plainObject(task.data) || {}, { task_id: task.task_id });
   },
-  // The poller can fail a task whose snapshot was still processing; that
-  // snapshot is rendered failed so a downstream gateway reads the same state.
+  // Vidu's query reply. Before the first poll the task holds the create
+  // reply, whose query fields are kept; the poller can fail a task whose
+  // snapshot was still processing, which then reads failed so a downstream
+  // gateway sees the same state.
   taskStatus: function (ctx, task) {
-    const output = Object.assign({}, plainObject(task.data) || {}, { id: task.task_id });
+    const data = plainObject(task.data) || {};
+    let output = Object.assign({}, data, { id: task.task_id });
+    if (data.task_id !== undefined && data.id === undefined) {
+      output = { id: task.task_id, err_code: "", creations: [] };
+      for (const key of QUERY_FIELDS) {
+        if (data[key] !== undefined) output[key] = data[key];
+      }
+    }
     if (task.status === "FAILURE" && output.state !== "failed") {
       output.state = "failed";
       output.err_code = output.err_code || task.fail_reason || "task failed";
@@ -296,84 +437,32 @@ export const native = {
   },
 };
 
+// The duration and resolution the task is reserved for, for the model the
+// channel sends.
+function submitSettings(ctx, action) {
+  const req = ctx.requestBody || {};
+  const model = ctx.upstreamModel || req.model;
+  return req.vendorBody ? nativeSettings(action, model, req.vendorBody) : requestSettings(req, action, model);
+}
+
+// A native request reaches Vidu as the client sent it. The host protocols
+// put the prompt and images in Vidu's fields and their other Vidu fields in
+// metadata, which cannot replace the billed model, duration and resolution.
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody;
-  const canonical = ["generation_mode", "reference_images", "first_frame", "last_frame"].some(function (name) {
-    return Object.prototype.hasOwnProperty.call(req, name);
-  });
-  let action, images;
-  if (canonical) {
-    // 键存在即选择规范形态，禁止混用旧字段或因空值退回历史推断。
-    for (const name of ["mode", "image", "images", "input_reference", "metadata", "action"]) {
-      if (Object.prototype.hasOwnProperty.call(req, name)) throw new Error("canonical request cannot contain " + name);
-    }
-    const hasReferences = Object.prototype.hasOwnProperty.call(req, "reference_images");
-    const hasFirst = Object.prototype.hasOwnProperty.call(req, "first_frame");
-    const hasLast = Object.prototype.hasOwnProperty.call(req, "last_frame");
-    switch (req.generation_mode) {
-      case "text_to_video":
-        if (hasReferences || hasFirst || hasLast) throw new Error("text_to_video forbids image roles");
-        action = "text_to_video";
-        images = null;
-        break;
-      case "reference_to_video":
-        if (hasFirst || hasLast) throw new Error("reference_to_video forbids frame roles");
-        if (!Array.isArray(req.reference_images) || req.reference_images.length < 1 || req.reference_images.length > 16)
-          throw new Error("reference_images must contain 1 to 16 file placeholders");
-        action = "reference_to_video";
-        images = req.reference_images;
-        break;
-      case "first_frame_to_video":
-        if (hasReferences || hasLast) throw new Error("first_frame_to_video forbids reference_images and last_frame");
-        if (!hasFirst) throw new Error("first_frame is required");
-        action = "image_to_video";
-        images = [req.first_frame];
-        break;
-      case "first_last_frame_to_video":
-        if (hasReferences) throw new Error("first_last_frame_to_video forbids reference_images");
-        if (!hasFirst || !hasLast) throw new Error("first_frame and last_frame are required");
-        action = "first_tail_to_video";
-        images = [req.first_frame, req.last_frame];
-        break;
-      default:
-        throw new Error("generation_mode must be an explicit canonical video mode");
-    }
-    const seen = new Set();
-    for (const [index, image] of (images || []).entries()) {
-      // 宿主已准入的内部占位对象仍核封闭形状；此处不替代真实文件/MIME/预算核验。
-      if (!image || typeof image !== "object" || Array.isArray(image)) throw new Error("image role must be a file placeholder");
-      for (const name of Object.keys(image)) {
-        if (!["__fileRef", "encoding", "mimeType", "maxBytes"].includes(name)) throw new Error("invalid image file placeholder field: " + name);
-      }
-      if (typeof image.__fileRef !== "string" || image.encoding !== "dataUrl") throw new Error("invalid image file placeholder");
-      if (seen.has(image.__fileRef)) throw new Error("duplicate image file reference");
-      seen.add(image.__fileRef);
-      const expected = action === "reference_to_video" ? "reference_image_" + index : index === 0 ? "first_frame" : "last_frame";
-      if (image.__fileRef !== "request_file:" + expected) throw new Error("image file reference must match role " + expected);
-      if (!Number.isInteger(image.maxBytes) || image.maxBytes <= 0 || image.maxBytes > 15728640)
-        throw new Error("image file placeholder maxBytes must be between 1 and 15728640");
-      if (image.mimeType !== "image/png" && image.mimeType !== "image/jpeg")
-        throw new Error("image file placeholder mimeType must be image/png or image/jpeg");
-    }
-    if (images) images = images.map(filePlaceholder);
-  } else {
-    action = actionFor(req);
-    images = Array.isArray(req.images) ? req.images.map(filePlaceholder) : null;
+  const canonical = req.vendorBody ? null : canonicalVideoRoles(req);
+  const action = canonical ? canonical.action : actionFor(req);
+  const model = ctx.upstreamModel || req.model;
+  let body;
+  if (req.vendorBody) body = Object.assign({}, req.vendorBody, { model: model });
+  else {
+    // 规范形态禁止 metadata，图片只取角色字段，不读旧 images。
+    body = Object.assign({}, canonical ? {} : req.metadata || {}, { model: model }, requestSettings(req, action, model));
+    if (trimmed(req.prompt)) body.prompt = req.prompt;
+    const images = canonical ? canonical.images : req.images;
+    if (Array.isArray(images) && images.length) body.images = images;
+    delete body.action;
   }
-  const metadata = canonical ? {} : req.metadata || {};
-  let model = ctx.upstreamModel || "viduq1";
-  if (action === "reference_to_video" && model.includes("viduq2")) model = "viduq2";
-  if (canonical) validateViduCombo(model, outboundDuration(req, model), outboundResolution(req, model), Boolean(images && images.length));
-  // metadata carries the other Vidu fields and cannot replace the billed
-  // model, duration and resolution.
-  const body = Object.assign({ images: images, prompt: req.prompt || null, movement_amplitude: "auto" }, metadata, {
-    model: model,
-    duration: outboundDuration(req, model),
-    resolution: outboundResolution(req, model),
-  });
-  delete body.action;
-  if (!body.prompt) delete body.prompt;
-  if (!body.bgm) delete body.bgm;
   if (Array.isArray(body.images)) body.images = body.images.map(filePlaceholder);
   return {
     url: apiRoot(ctx) + pathFor(action),
@@ -392,9 +481,7 @@ export function parseSubmitResponse(ctx, resp) {
 
 export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
-  const req = ctx.requestBody || {};
-  const model = ctx.upstreamModel || req.model;
-  return { duration: outboundDuration(req, model), resolution: outboundResolution(req, model) };
+  return submitSettings(ctx, actionFor(ctx.requestBody || {}));
 }
 
 export function buildQueryRequest(ctx) {
@@ -469,9 +556,9 @@ export const protocols = {
       else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = req.duration;
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
       if (Object.prototype.hasOwnProperty.call(req, "metadata")) requestBody.metadata = req.metadata;
-      const duration = requestBody.duration === undefined ? undefined : Number(requestBody.duration);
-      validateViduCombo(model, duration, outboundResolution(requestBody, model), images.length > 0);
-      return { kind: "submit", model: model, action: actionFor(requestBody), requestBody: requestBody };
+      const action = actionFor(requestBody);
+      requestSettings(requestBody, action, ctx.upstreamModel || model);
+      return { kind: "submit", model: model, action: action, requestBody: requestBody };
     },
     renderEvents: function (ctx, task, previousState) {
       const status = String(task.status || "UNKNOWN").toUpperCase();
@@ -563,23 +650,25 @@ protocols.openai_video = {
     for (const field of ["generation_mode", "reference_images", "first_frame", "last_frame"]) {
       if (Object.prototype.hasOwnProperty.call(req, field)) throw new Error("openai_video does not accept canonical field: " + field);
     }
+    // vendorBody carries a native request's own body; clients of this protocol cannot set it.
+    delete req.vendorBody;
     const model = ctx.upstreamModel || ctx.model || req.model;
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined) req.duration = Number(seconds);
-    else req.duration = defaultDuration(model);
     if (hasInputReferenceFile) {
       req.images = [{ __fileRef: "request_file:input_reference", encoding: "dataUrl", maxBytes: 15728640 }];
     } else {
       const image = trimmed(req.input_reference || req.image);
       if (image && (!Array.isArray(req.images) || req.images.length === 0)) req.images = [image];
     }
-    req.resolution = outboundResolution(req, model);
-    const hasImages = hasViduImages(req, hasInputReferenceFile);
-    validateViduCombo(model, req.duration, req.resolution, hasImages);
+    const action = actionFor(req);
+    const settings = requestSettings(req, action, model);
+    req.duration = settings.duration;
+    req.resolution = settings.resolution;
     return {
       kind: "submit",
       model: ctx.model,
-      action: actionFor(req),
+      action: action,
       requestBody: Object.assign({}, req, { model: ctx.model }),
     };
   },

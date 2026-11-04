@@ -236,15 +236,6 @@ func TestViduCanonicalVideoRejectsInvalidRoles(t *testing.T) {
 		})
 	}
 
-	t.Run("existing_vidu_combo_rejection_kept", func(t *testing.T) {
-		_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
-			"baseUrl": "http://127.0.0.1:1", "upstreamModel": "vidu2.0",
-			"requestBody": map[string]any{"generation_mode": "text_to_video", "model": "vidu2.0", "prompt": "不放宽原供应商限制"},
-		})
-		require.Error(t, callErr)
-		assert.Contains(t, callErr.Error(), "vidu2.0 does not support text-to-video")
-	})
-
 	for _, field := range []string{"mode", "image", "images", "input_reference", "metadata", "action"} {
 		t.Run("mixed_legacy_"+field, func(t *testing.T) {
 			_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
@@ -301,10 +292,8 @@ func TestViduLegacyVideoHookUnchanged(t *testing.T) {
 			assert.Equal(t, "http://127.0.0.1:1/ent/v2"+testCase.wantPath, descriptor.URL)
 			var expectedImages any = testCase.images
 			expectedModel := "viduq2"
-			if override, exists := testCase.metadata["images"]; exists {
-				expectedImages = override
-			}
-			// 上游已收紧：metadata 只能带 Vidu 其它字段，不能改写计费模型、时长与分辨率。
+			// 上游已收紧：metadata 只能带 Vidu 其它字段，不能改写计费模型、时长与分辨率；
+			// 请求自带的 images 也优先于 metadata.images（上游 2026-11 合入后的语义）。
 			expected, err := common.Marshal(expectedImages)
 			require.NoError(t, err)
 			actual, err := common.Marshal(descriptor.Body["images"])
@@ -400,7 +389,7 @@ func TestViduLegacyEndpointRejectsCanonicalFields(t *testing.T) {
 		assert.Equal(t, "http://127.0.0.1:1/ent/v2/start-end2video", descriptor.URL)
 		expectedBody, err := common.Marshal(map[string]any{
 			"model": "viduq2", "prompt": "保留旧首尾帧请求", "duration": 8, "resolution": "720p",
-			"images": images, "movement_amplitude": "auto",
+			"images": images,
 		})
 		require.NoError(t, err)
 		actualBody, err := common.Marshal(descriptor.Body)
@@ -491,7 +480,7 @@ func TestViduLegacyEndpointRejectsCanonicalFields(t *testing.T) {
 		assert.Equal(t, "http://127.0.0.1:1/ent/v2/img2video", descriptor.URL)
 		expectedBody, err := common.Marshal(map[string]any{
 			"model": "viduq2", "prompt": "保留旧文件首帧请求", "duration": 5, "resolution": "720p",
-			"images": images, "movement_amplitude": "auto",
+			"images": images,
 		})
 		require.NoError(t, err)
 		actualBody, err := common.Marshal(descriptor.Body)
@@ -503,4 +492,21 @@ func TestViduLegacyEndpointRejectsCanonicalFields(t *testing.T) {
 // viduCanonicalFile 仅构造宿主准入之后的内部占位输入，不代表已核真实文件或供应商能力。
 func viduCanonicalFile(field string) map[string]any {
 	return map[string]any{"__fileRef": "request_file:" + field, "encoding": "dataUrl", "mimeType": "image/png", "maxBytes": 15728640}
+}
+
+// 规范形态的计费预留与发送同取 generation_mode 定的动作：vidu2.0 参考生视频默认 4 秒 360p，
+// 若预留退回旧推断（无 images 即文生视频）会变成 5 秒 720p。
+func TestViduCanonicalVideoReservesByGenerationMode(t *testing.T) {
+	plugin := newViduPluginForTest(t)
+	request := map[string]any{
+		"generation_mode": "reference_to_video", "model": "vidu2.0", "prompt": "按参考图预留",
+		"reference_images": []any{viduCanonicalFile("reference_image_0")},
+	}
+	value, callErr := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"baseUrl": "http://127.0.0.1:1", "upstreamModel": "vidu2.0", "requestBody": request,
+	})
+	require.NoError(t, callErr)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"duration":4,"resolution":"360p"}`, string(encoded))
 }
