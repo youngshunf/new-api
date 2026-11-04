@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -77,6 +78,8 @@ var providers = map[string]Provider{
 	"deepseek-search":    deepSeekProvider{},
 	"tencent-wsa-search": tencentWSAProvider{now: time.Now},
 	"tavily-search":      tavilyProvider{},
+	"exa-search":         exaProvider{},
+	"baidu-search":       baiduProvider{now: time.Now},
 }
 
 // ProviderFor 按渠道映射后的上游模型名取提供方；取不到即渠道配置错误，不回落默认提供方。
@@ -111,6 +114,15 @@ func ParseRequest(body []byte) (SearchRequest, error) {
 		return SearchRequest{}, fmt.Errorf("query must be 1 to %d characters", maxQueryLength)
 	}
 	return SearchRequest{Query: query, Count: count}, nil
+}
+
+// siteNameFromURL 是不给站点名的提供方的站点名：网址主机名去掉 www. 前缀，网址无法解析时为空。
+func siteNameFromURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(parsed.Hostname(), "www.")
 }
 
 // joinURL 拼接渠道地址与接口路径，地址为空时用提供方默认地址。
