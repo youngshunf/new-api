@@ -15,7 +15,6 @@ const (
 	tencentWSADefaultBaseURL = "https://api.wsa.cloud.tencent.com"
 	tencentWSAMaxExcludes    = 5
 	tencentWSADateLayout     = "2006/01/02 15:04:05"
-	freshnessDateLayout      = "2006-01-02"
 	freshnessEarliestDate    = "1970-01-01"
 )
 
@@ -51,74 +50,27 @@ type tencentWSAQuery struct {
 	Freshness string `json:"Freshness,omitempty"`
 }
 
-// translateTencentWSAQuery 从查询串取出运算符并翻成 SearchPro 参数：
+// translateTencentWSAQuery 把统一查询串翻成 SearchPro 参数：
 // 第一个 site: → Site；没有 site: 时全部 -site: 合成 exclude:a|b（最多 5 个）；
-// after:/before: 合成 Freshness=起,止（缺一端用 1970-01-01 或北京时间当天）；lang: 删去。
-// 引号短语内的词不当运算符；日期不是 YYYY-MM-DD 的 after:/before: 当普通文本。余下文本为空时返回 400。
+// after:/before: 合成 Freshness=起,止（缺一端用 1970-01-01 或北京时间当天）。余下文本为空时返回 400。
 func translateTencentWSAQuery(query string, now time.Time) (tencentWSAQuery, *SearchError) {
-	var text []string
-	var site, after, before string
-	var excludes []string
-	inQuote := false
-	for _, token := range strings.Fields(query) {
-		quoted := inQuote
-		if strings.Count(token, `"`)%2 == 1 {
-			inQuote = !inQuote
-		}
-		if quoted {
-			text = append(text, token)
-			continue
-		}
-		if value, ok := strings.CutPrefix(token, "-site:"); ok && value != "" {
-			excludes = append(excludes, value)
-			continue
-		}
-		if value, ok := strings.CutPrefix(token, "site:"); ok && value != "" {
-			if site == "" {
-				site = value
-			}
-			continue
-		}
-		if value, ok := strings.CutPrefix(token, "after:"); ok && value != "" {
-			// 日期不是 YYYY-MM-DD 时原样留在查询词里，不回 400：400 不换渠道，别的提供方可能认得这种写法。
-			if _, err := time.Parse(freshnessDateLayout, value); err != nil {
-				text = append(text, token)
-				continue
-			}
-			if after == "" {
-				after = value
-			}
-			continue
-		}
-		if value, ok := strings.CutPrefix(token, "before:"); ok && value != "" {
-			// 日期不是 YYYY-MM-DD 时原样留在查询词里，不回 400：400 不换渠道，别的提供方可能认得这种写法。
-			if _, err := time.Parse(freshnessDateLayout, value); err != nil {
-				text = append(text, token)
-				continue
-			}
-			if before == "" {
-				before = value
-			}
-			continue
-		}
-		if value, ok := strings.CutPrefix(token, "lang:"); ok && value != "" {
-			continue
-		}
-		text = append(text, token)
+	operators, searchErr := parseSearchOperators(query)
+	if searchErr != nil {
+		return tencentWSAQuery{}, searchErr
 	}
-	translated := tencentWSAQuery{Query: strings.Join(text, " "), Site: site}
-	if translated.Query == "" {
-		return tencentWSAQuery{}, newSearchError(http.StatusBadRequest, "query has no search text besides operators")
+	translated := tencentWSAQuery{Query: operators.Text}
+	if len(operators.Sites) > 0 {
+		translated.Site = operators.Sites[0]
+	} else if len(operators.Excludes) > 0 {
+		translated.Site = "exclude:" + strings.Join(operators.Excludes[:min(len(operators.Excludes), tencentWSAMaxExcludes)], "|")
 	}
-	if site == "" && len(excludes) > 0 {
-		translated.Site = "exclude:" + strings.Join(excludes[:min(len(excludes), tencentWSAMaxExcludes)], "|")
-	}
+	after, before := operators.After, operators.Before
 	if after != "" || before != "" {
 		if after == "" {
 			after = freshnessEarliestDate
 		}
 		if before == "" {
-			before = now.In(beijingTime).Format(freshnessDateLayout)
+			before = now.In(beijingTime).Format(searchOperatorDateLayout)
 		}
 		translated.Freshness = after + "," + before
 	}

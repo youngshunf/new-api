@@ -76,6 +76,7 @@ type Provider interface {
 var providers = map[string]Provider{
 	"deepseek-search":    deepSeekProvider{},
 	"tencent-wsa-search": tencentWSAProvider{now: time.Now},
+	"tavily-search":      tavilyProvider{},
 }
 
 // ProviderFor 按渠道映射后的上游模型名取提供方；取不到即渠道配置错误，不回落默认提供方。
