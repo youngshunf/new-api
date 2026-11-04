@@ -79,7 +79,7 @@ var providers = map[string]Provider{
 	"tencent-wsa-search": tencentWSAProvider{now: time.Now},
 	"tavily-search":      tavilyProvider{},
 	"exa-search":         exaProvider{},
-	"baidu-search":       baiduProvider{},
+	"baidu-search":       baiduProvider{now: time.Now},
 }
 
 // ProviderFor 按渠道映射后的上游模型名取提供方；取不到即渠道配置错误，不回落默认提供方。

@@ -331,23 +331,32 @@ func TestExaParseResponse(t *testing.T) {
 	}
 }
 
-// 百度请求：条数直接作 top_k；site: → match.site，-site: → block_websites，日期 → page_time。
+// 百度请求：条数直接作 top_k；site: → match.site，-site: → block_websites；
+// 日期两端总是都发：缺终点补北京时间当天（UTC 仍是 11-03），缺起点补 2000-01-01。
 func TestBaiduBuildRequest(t *testing.T) {
-	req, searchErr := baiduProvider{}.BuildRequest(context.Background(), "", "bce-key",
-		SearchRequest{Query: "新能源 销量 site:36kr.com -site:weibo.com after:2026-10-01", Count: 5})
-	require.Nil(t, searchErr)
-	assert.Equal(t, "https://qianfan.baidubce.com/v2/ai_search/web_search", req.URL.String())
-	assert.Equal(t, "Bearer bce-key", req.Header.Get("Authorization"))
-	body, err := io.ReadAll(req.Body)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"messages":[{"role":"user","content":"新能源 销量"}],"resource_type_filter":[{"type":"web","top_k":5}],`+
-		`"search_filter":{"match":{"site":["36kr.com"]},"range":{"page_time":{"gte":"2026-10-01"}}},"block_websites":["weibo.com"]}`, string(body))
-
-	req, searchErr = baiduProvider{}.BuildRequest(context.Background(), "", "bce-key", SearchRequest{Query: "南极", Count: 3})
-	require.Nil(t, searchErr)
-	body, err = io.ReadAll(req.Body)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"messages":[{"role":"user","content":"南极"}],"resource_type_filter":[{"type":"web","top_k":3}]}`, string(body))
+	provider := baiduProvider{now: func() time.Time { return time.Date(2026, 11, 3, 20, 0, 0, 0, time.UTC) }}
+	tests := []struct {
+		name, query, want string
+	}{
+		{"plain", "南极", `{"messages":[{"role":"user","content":"南极"}],"resource_type_filter":[{"type":"web","top_k":5}]}`},
+		{"site, exclusion and after", "新能源 销量 site:36kr.com -site:weibo.com after:2026-10-01",
+			`{"messages":[{"role":"user","content":"新能源 销量"}],"resource_type_filter":[{"type":"web","top_k":5}],` +
+				`"search_filter":{"match":{"site":["36kr.com"]},"range":{"page_time":{"gte":"2026-10-01","lte":"2026-11-04"}}},"block_websites":["weibo.com"]}`},
+		{"before only", "新能源 before:2024-06-30",
+			`{"messages":[{"role":"user","content":"新能源"}],"resource_type_filter":[{"type":"web","top_k":5}],` +
+				`"search_filter":{"range":{"page_time":{"gte":"2000-01-01","lte":"2024-06-30"}}}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, searchErr := provider.BuildRequest(context.Background(), "", "bce-key", SearchRequest{Query: tc.query, Count: 5})
+			require.Nil(t, searchErr)
+			assert.Equal(t, "https://qianfan.baidubce.com/v2/ai_search/web_search", req.URL.String())
+			assert.Equal(t, "Bearer bce-key", req.Header.Get("Authorization"))
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, string(body))
+		})
+	}
 }
 
 // 百度答复：日期按北京时间；标题是残缺 JSON 时改用片段开头 40 字；content 空时 summary 取片段。

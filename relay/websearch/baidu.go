@@ -15,6 +15,8 @@ const (
 	baiduDateLayout     = "2006-01-02 15:04:05"
 	// baiduTitleFromSnippetRunes 是标题不可用时从片段截取的字符数。
 	baiduTitleFromSnippetRunes = 40
+	// baiduEarliestDate 是只给 before: 时补的起点：起点为 1970-01-01 时百度实测忽略整个时间范围。
+	baiduEarliestDate = "2000-01-01"
 )
 
 // baiduErrorStatuses 把百度千帆答复体里的 code 按关键词（不分大小写）归一为统一状态，先匹配先得；
@@ -37,7 +39,9 @@ var baiduErrorStatuses = []struct {
 }
 
 // baiduProvider 对接百度千帆「百度搜索」（/v2/ai_search/web_search，API Key 方式）。
-type baiduProvider struct{}
+type baiduProvider struct {
+	now func() time.Time
+}
 
 // baiduRequest 是百度搜索请求体；未用到的参数不发，取上游默认值。
 type baiduRequest struct {
@@ -71,13 +75,15 @@ type baiduTimeRange struct {
 }
 
 type baiduPageTime struct {
-	Gte string `json:"gte,omitempty"`
-	Lte string `json:"lte,omitempty"`
+	Gte string `json:"gte"`
+	Lte string `json:"lte"`
 }
 
 // translateBaiduQuery 把统一查询串翻成百度搜索请求：全部 site: → search_filter.match.site，
 // 全部 -site: → block_websites，after:/before: → search_filter.range.page_time 的 gte/lte。余下文本为空时返回 400。
-func translateBaiduQuery(req SearchRequest) (baiduRequest, *SearchError) {
+// 时间范围两端总是都发（缺起点补 2000-01-01、缺终点补北京时间当天）：百度实测只给 gte 时，
+// 与站点限定同用即被忽略；只给 lte 时一律被忽略。
+func translateBaiduQuery(req SearchRequest, now time.Time) (baiduRequest, *SearchError) {
 	operators, searchErr := parseSearchOperators(req.Query)
 	if searchErr != nil {
 		return baiduRequest{}, searchErr
@@ -92,7 +98,14 @@ func translateBaiduQuery(req SearchRequest) (baiduRequest, *SearchError) {
 		filter.Match = &baiduSiteMatch{Site: operators.Sites}
 	}
 	if operators.After != "" || operators.Before != "" {
-		filter.Range = &baiduTimeRange{PageTime: baiduPageTime{Gte: operators.After, Lte: operators.Before}}
+		pageTime := baiduPageTime{Gte: operators.After, Lte: operators.Before}
+		if pageTime.Gte == "" {
+			pageTime.Gte = baiduEarliestDate
+		}
+		if pageTime.Lte == "" {
+			pageTime.Lte = now.In(beijingTime).Format(searchOperatorDateLayout)
+		}
+		filter.Range = &baiduTimeRange{PageTime: pageTime}
 	}
 	if filter.Match != nil || filter.Range != nil {
 		translated.SearchFilter = &filter
@@ -100,8 +113,8 @@ func translateBaiduQuery(req SearchRequest) (baiduRequest, *SearchError) {
 	return translated, nil
 }
 
-func (baiduProvider) BuildRequest(ctx context.Context, baseURL, apiKey string, req SearchRequest) (*http.Request, *SearchError) {
-	translated, searchErr := translateBaiduQuery(req)
+func (p baiduProvider) BuildRequest(ctx context.Context, baseURL, apiKey string, req SearchRequest) (*http.Request, *SearchError) {
+	translated, searchErr := translateBaiduQuery(req, p.now())
 	if searchErr != nil {
 		return nil, searchErr
 	}
