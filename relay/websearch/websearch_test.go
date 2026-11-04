@@ -365,12 +365,13 @@ func TestBaiduParseResponse(t *testing.T) {
 	body := `{"request_id":"r","references":[` +
 		`{"id":1,"url":"https://36kr.com/newsflashes/1","title":"赛力斯10月销量","date":"2026-11-01 16:39:00","website":"36氪","snippet":"片段一","content":"正文一","type":"web"},` +
 		`{"id":2,"url":"https://weibo.com/2","title":"{\"code\":0,\"stg_version\":\"v1\",\"strateg","date":"","website":"微博平台","snippet":"` + longSnippet + `","content":"","type":"web"},` +
-		`{"id":3,"url":"https://three.example/","title":"三","snippet":"s3","type":"web"}]}`
-	got, searchErr := baiduProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(body), SearchRequest{Query: "q", Count: 2})
+		`{"id":3,"url":"https://www.three.example/","title":"三","snippet":"s3","website":"无","type":"web"}]}`
+	got, searchErr := baiduProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(body), SearchRequest{Query: "q", Count: 3})
 	require.Nil(t, searchErr)
 	assert.Equal(t, []SearchResult{
 		{Title: "赛力斯10月销量", URL: "https://36kr.com/newsflashes/1", Snippet: "片段一", Summary: "正文一", SiteName: "36氪", Date: "2026-11-01T16:39:00+08:00"},
 		{Title: strings.Repeat("销", 40) + "…", URL: "https://weibo.com/2", Snippet: longSnippet, Summary: longSnippet, SiteName: "微博平台"},
+		{Title: "三", URL: "https://www.three.example/", Snippet: "s3", Summary: "s3", SiteName: "three.example"},
 	}, got.Results)
 
 	got, searchErr = baiduProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(`{"request_id":"r","references":[]}`), SearchRequest{Query: "q", Count: 8})

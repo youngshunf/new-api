@@ -132,7 +132,8 @@ func (p baiduProvider) BuildRequest(ctx context.Context, baseURL, apiKey string,
 }
 
 // ParseResponse 归一百度搜索答复。错误可能是非 2xx，也可能是 HTTP 200 加 code；
-// 日期无时区，按北京时间理解；标题是残缺 JSON 文本时（实测微博、公众号条目会这样）改用片段开头。
+// 日期无时区，按北京时间理解；标题是残缺 JSON 文本时（实测微博、公众号条目会这样）改用片段开头；
+// 站点名为空或「无」时取网址主机名。
 func (baiduProvider) ParseResponse(_ context.Context, status int, body []byte, req SearchRequest) (SearchResponse, *SearchError) {
 	var answer struct {
 		RequestID  string            `json:"request_id"`
@@ -176,7 +177,11 @@ func (baiduProvider) ParseResponse(_ context.Context, status int, body []byte, r
 				title = string(runes[:baiduTitleFromSnippetRunes]) + "…"
 			}
 		}
-		result := SearchResult{Title: title, URL: item.URL, Snippet: snippet, Summary: summary, SiteName: item.Website}
+		siteName := strings.TrimSpace(item.Website)
+		if siteName == "" || siteName == "无" {
+			siteName = siteNameFromURL(item.URL)
+		}
+		result := SearchResult{Title: title, URL: item.URL, Snippet: snippet, Summary: summary, SiteName: siteName}
 		if date, err := time.ParseInLocation(baiduDateLayout, item.Date, beijingTime); err == nil {
 			result.Date = date.Format(time.RFC3339)
 		}
