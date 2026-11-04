@@ -46,7 +46,7 @@ func TestParseRequest(t *testing.T) {
 }
 
 func TestProviderForRegisteredUpstreamModels(t *testing.T) {
-	for _, name := range []string{"deepseek-search", "tencent-wsa-search", "tavily-search"} {
+	for _, name := range []string{"deepseek-search", "tencent-wsa-search", "tavily-search", "exa-search", "baidu-search"} {
 		_, ok := ProviderFor(name)
 		assert.True(t, ok, name)
 	}
@@ -280,5 +280,116 @@ func TestTavilyErrorStatuses(t *testing.T) {
 		_, searchErr := tavilyProvider{}.ParseResponse(context.Background(), tc.status, []byte(tc.body), SearchRequest{Query: "q", Count: 8})
 		require.NotNil(t, searchErr, tc.status)
 		assert.Equal(t, tc.want, searchErr.Status, "%d %s", tc.status, tc.body)
+	}
+}
+
+// Exa 请求：固定 lite、条数截在 10、带摘录；站点与日期运算符翻成参数，日期按北京时间当天起止。
+func TestExaBuildRequest(t *testing.T) {
+	req, searchErr := exaProvider{}.BuildRequest(context.Background(), "", "exa-key",
+		SearchRequest{Query: "新能源 销量 site:36kr.com -site:zhihu.com after:2026-10-01 before:2026-10-31", Count: 20})
+	require.Nil(t, searchErr)
+	assert.Equal(t, "https://api.exa.ai/search", req.URL.String())
+	assert.Equal(t, "exa-key", req.Header.Get("x-api-key"))
+	body, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"query":"新能源 销量","type":"lite","numResults":10,"includeDomains":["36kr.com"],"excludeDomains":["zhihu.com"],`+
+		`"startPublishedDate":"2026-10-01T00:00:00+08:00","endPublishedDate":"2026-10-31T23:59:59+08:00","contents":{"highlights":{"maxCharacters":500}}}`, string(body))
+
+	_, searchErr = exaProvider{}.BuildRequest(context.Background(), "", "exa-key", SearchRequest{Query: "site:a.com", Count: 3})
+	require.NotNil(t, searchErr)
+	assert.Equal(t, http.StatusBadRequest, searchErr.Status)
+}
+
+func TestExaParseResponse(t *testing.T) {
+	body := `{"requestId":"r","results":[` +
+		`{"id":"1","title":"10月新能源汽车销量榜","url":"https://finance.sina.com.cn/tech/1.shtml","publishedDate":"2026-11-03T10:18:25.000Z","highlights":["比亚迪第一","特斯拉第8"]},` +
+		`{"title":"无日期","url":"https://www.36kr.com/p/2","highlights":[]},` +
+		`{"title":"三","url":"https://three.example/"}],"costDollars":{"total":0.004}}`
+	got, searchErr := exaProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(body), SearchRequest{Query: "q", Count: 2})
+	require.Nil(t, searchErr)
+	assert.Equal(t, []SearchResult{
+		{Title: "10月新能源汽车销量榜", URL: "https://finance.sina.com.cn/tech/1.shtml", Snippet: "比亚迪第一 … 特斯拉第8", Summary: "比亚迪第一 … 特斯拉第8", SiteName: "finance.sina.com.cn", Date: "2026-11-03T10:18:25Z"},
+		{Title: "无日期", URL: "https://www.36kr.com/p/2", SiteName: "36kr.com"},
+	}, got.Results)
+
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   int
+	}{
+		{http.StatusBadRequest, `{"error":"bad","tag":"INVALID_REQUEST"}`, http.StatusBadRequest},
+		{http.StatusUnauthorized, `{"error":"Invalid API key.","tag":"INVALID_API_KEY"}`, http.StatusUnauthorized},
+		{http.StatusForbidden, `{"error":"blocked","tag":"TEAM_BLOCKED"}`, http.StatusUnauthorized},
+		{http.StatusPaymentRequired, `{"error":"out of credits"}`, http.StatusPaymentRequired},
+		{http.StatusTooManyRequests, ``, http.StatusTooManyRequests},
+		{http.StatusServiceUnavailable, ``, http.StatusBadGateway},
+		{http.StatusOK, `{"results":null}`, http.StatusBadGateway},
+	} {
+		_, searchErr := exaProvider{}.ParseResponse(context.Background(), tc.status, []byte(tc.body), SearchRequest{Query: "q", Count: 8})
+		require.NotNil(t, searchErr, tc.status)
+		assert.Equal(t, tc.want, searchErr.Status, "%d %s", tc.status, tc.body)
+	}
+}
+
+// 百度请求：条数直接作 top_k；site: → match.site，-site: → block_websites，日期 → page_time。
+func TestBaiduBuildRequest(t *testing.T) {
+	req, searchErr := baiduProvider{}.BuildRequest(context.Background(), "", "bce-key",
+		SearchRequest{Query: "新能源 销量 site:36kr.com -site:weibo.com after:2026-10-01", Count: 5})
+	require.Nil(t, searchErr)
+	assert.Equal(t, "https://qianfan.baidubce.com/v2/ai_search/web_search", req.URL.String())
+	assert.Equal(t, "Bearer bce-key", req.Header.Get("Authorization"))
+	body, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"messages":[{"role":"user","content":"新能源 销量"}],"resource_type_filter":[{"type":"web","top_k":5}],`+
+		`"search_filter":{"match":{"site":["36kr.com"]},"range":{"page_time":{"gte":"2026-10-01"}}},"block_websites":["weibo.com"]}`, string(body))
+
+	req, searchErr = baiduProvider{}.BuildRequest(context.Background(), "", "bce-key", SearchRequest{Query: "南极", Count: 3})
+	require.Nil(t, searchErr)
+	body, err = io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"messages":[{"role":"user","content":"南极"}],"resource_type_filter":[{"type":"web","top_k":3}]}`, string(body))
+}
+
+// 百度答复：日期按北京时间；标题是残缺 JSON 时改用片段开头 40 字；content 空时 summary 取片段。
+func TestBaiduParseResponse(t *testing.T) {
+	longSnippet := strings.Repeat("销", 45)
+	body := `{"request_id":"r","references":[` +
+		`{"id":1,"url":"https://36kr.com/newsflashes/1","title":"赛力斯10月销量","date":"2026-11-01 16:39:00","website":"36氪","snippet":"片段一","content":"正文一","type":"web"},` +
+		`{"id":2,"url":"https://weibo.com/2","title":"{\"code\":0,\"stg_version\":\"v1\",\"strateg","date":"","website":"微博平台","snippet":"` + longSnippet + `","content":"","type":"web"},` +
+		`{"id":3,"url":"https://three.example/","title":"三","snippet":"s3","type":"web"}]}`
+	got, searchErr := baiduProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(body), SearchRequest{Query: "q", Count: 2})
+	require.Nil(t, searchErr)
+	assert.Equal(t, []SearchResult{
+		{Title: "赛力斯10月销量", URL: "https://36kr.com/newsflashes/1", Snippet: "片段一", Summary: "正文一", SiteName: "36氪", Date: "2026-11-01T16:39:00+08:00"},
+		{Title: strings.Repeat("销", 40) + "…", URL: "https://weibo.com/2", Snippet: longSnippet, Summary: longSnippet, SiteName: "微博平台"},
+	}, got.Results)
+
+	got, searchErr = baiduProvider{}.ParseResponse(context.Background(), http.StatusOK, []byte(`{"request_id":"r","references":[]}`), SearchRequest{Query: "q", Count: 8})
+	require.Nil(t, searchErr)
+	assert.Empty(t, got.Results)
+}
+
+func TestBaiduErrorStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		want       int
+	}{
+		{"auth header", `{"code":216003,"requestId":"x","message":"[Code: InvalidHTTPAuthHeader; Message: Fail to parse apikey authorization]"}`, http.StatusUnauthorized, http.StatusUnauthorized},
+		{"invalid argument in 200", `{"request_id":"r","code":"InvalidArgument","message":"Invalid time range option"}`, http.StatusOK, http.StatusBadRequest},
+		{"overdue in 200", `{"request_id":"r","code":"AccountOverdue","message":"account overdue"}`, http.StatusOK, http.StatusPaymentRequired},
+		{"quota", `{"request_id":"r","code":"QuotaLimitExceeded","message":"x"}`, http.StatusForbidden, http.StatusUnauthorized},
+		{"free quota in 200", `{"request_id":"r","code":"QuotaLimitExceeded","message":"x"}`, http.StatusOK, http.StatusPaymentRequired},
+		{"rate limit", `{"request_id":"r","code":"RateLimitExceeded","message":"x"}`, http.StatusTooManyRequests, http.StatusTooManyRequests},
+		{"internal in 200", `{"request_id":"r","code":"InternalError","message":"x"}`, http.StatusOK, http.StatusBadGateway},
+		{"http 500", ``, http.StatusInternalServerError, http.StatusBadGateway},
+		{"no references", `{"request_id":"r"}`, http.StatusOK, http.StatusBadGateway},
+		{"not json", `<html>`, http.StatusOK, http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, searchErr := baiduProvider{}.ParseResponse(context.Background(), tc.status, []byte(tc.body), SearchRequest{Query: "q", Count: 8})
+			require.NotNil(t, searchErr)
+			assert.Equal(t, tc.want, searchErr.Status)
+		})
 	}
 }

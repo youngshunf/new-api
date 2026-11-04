@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -112,7 +110,7 @@ func (tavilyProvider) ParseResponse(_ context.Context, status int, body []byte, 
 	}
 	results := make([]SearchResult, 0, min(len(items), req.Count))
 	for _, item := range items[:min(len(items), req.Count)] {
-		result := SearchResult{Title: item.Title, URL: item.URL, Snippet: item.Content, Summary: item.Content, SiteName: tavilySiteName(item.URL)}
+		result := SearchResult{Title: item.Title, URL: item.URL, Snippet: item.Content, Summary: item.Content, SiteName: siteNameFromURL(item.URL)}
 		var published string
 		if common.GetJsonType(item.PublishedDate) == "string" && common.Unmarshal(item.PublishedDate, &published) == nil {
 			result.Date = tavilyDate(published)
@@ -120,15 +118,6 @@ func (tavilyProvider) ParseResponse(_ context.Context, status int, body []byte, 
 		results = append(results, result)
 	}
 	return SearchResponse{Results: results}, nil
-}
-
-// tavilySiteName 取网址主机名并去掉 www. 前缀；网址无法解析时为空。
-func tavilySiteName(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimPrefix(parsed.Hostname(), "www.")
 }
 
 // tavilyDate 把 Tavily 的发布日期（实测为 RFC1123 GMT 写法）转成 RFC3339；认不出时省略。
