@@ -905,6 +905,7 @@ func TestProductionPluginNativeQueryTraversesInnerRouter(t *testing.T) {
 			production[5],
 			production[6],
 			production[7],
+			production[8],
 		}
 	}
 	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{kling}, authenticatedProductionHandlers)

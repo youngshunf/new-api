@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -15,7 +16,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/http/httpproxy"
@@ -24,6 +25,7 @@ import (
 const KeyRequestBody = "key_request_body"
 const KeyBodyStorage = "key_body_storage"
 const keyBodyReadError = "key_body_read_error"
+const keyMultipartForms = "key_multipart_forms"
 
 var ErrRequestBodyTooLarge = errors.New("request body too large")
 
@@ -68,21 +70,19 @@ func GetRequestBody(c *gin.Context) (io.Seeker, error) {
 		return nil, readErr.(error)
 	}
 
-	maxMB := constant.MaxRequestBodyMB
-	if maxMB <= 0 {
-		maxMB = 128 // 默认 128MB
+	maxBytes := RequestBodyLimitBytes(c)
+	var storage BodyStorage
+	var err error
+	if _, relay := c.Get(RelayBodyBudgetKey); relay {
+		storage, err = createRelayBodyStorage(c, maxBytes)
+	} else {
+		storage, err = CreateBodyStorageFromReader(c.Request.Body, c.Request.ContentLength, maxBytes)
 	}
-	maxBytes := int64(maxMB) << 20
-
-	contentLength := c.Request.ContentLength
-
-	// 使用新的存储系统
-	storage, err := CreateBodyStorageFromReader(c.Request.Body, contentLength, maxBytes)
 	_ = c.Request.Body.Close()
 
 	if err != nil {
 		if IsRequestBodyTooLargeError(err) {
-			err = errors.Wrap(ErrRequestBodyTooLarge, fmt.Sprintf("request body exceeds %d MB", maxMB))
+			err = pkgerrors.Wrap(ErrRequestBodyTooLarge, fmt.Sprintf("request body exceeds %d MB", maxBytes>>20))
 		}
 		c.Set(keyBodyReadError, err)
 		return nil, err
@@ -109,15 +109,28 @@ func GetBodyStorage(c *gin.Context) (BodyStorage, error) {
 
 // CleanupBodyStorage 清理请求体存储（应在请求结束时调用）
 func CleanupBodyStorage(c *gin.Context) error {
+	var cleanupErr error
+	if cached, exists := c.Get(keyMultipartForms); exists {
+		forms, _ := cached.([]*multipart.Form)
+		pending := forms[:0]
+		for _, form := range forms {
+			if err := form.RemoveAll(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+				pending = append(pending, form)
+			}
+		}
+		clear(forms[len(pending):])
+		c.Set(keyMultipartForms, pending)
+	}
 	if storage, exists := c.Get(KeyBodyStorage); exists && storage != nil {
 		if bs, ok := storage.(BodyStorage); ok {
 			if err := bs.Close(); err != nil {
-				return err
+				return errors.Join(cleanupErr, err)
 			}
 		}
 		c.Set(KeyBodyStorage, nil)
 	}
-	return nil
+	return cleanupErr
 }
 
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
@@ -126,6 +139,23 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 		return err
 	}
 	contentType := c.Request.Header.Get("Content-Type")
+	mediaType, _, mimeErr := mime.ParseMediaType(contentType)
+	if mimeErr == nil && mediaType == "multipart/form-data" {
+		form, err := ParseMultipartFormReusable(c)
+		if err != nil {
+			return err
+		}
+		defer form.RemoveAll()
+		formMap := make(map[string]any, len(form.Value))
+		for key, values := range form.Value {
+			if len(values) == 1 {
+				formMap[key] = values[0]
+			} else {
+				formMap[key] = values
+			}
+		}
+		return processFormMap(formMap, v)
+	}
 
 	// disk-backed JSON: stream-decode directly from the file to avoid
 	// materializing the entire payload back into a transient []byte
@@ -362,8 +392,8 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 	if err != nil {
 		return nil, err
 	}
-	requestBody, err := storage.Bytes()
-	if err != nil {
+	// 原样从暂存读取，不能为了解析multipart再把整包复制进堆。
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
 
@@ -381,7 +411,7 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 		return nil, err
 	}
 
-	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
+	reader := multipart.NewReader(storage, boundary)
 	form, err := reader.ReadForm(multipartMemoryLimit())
 	if err != nil {
 		return nil, err
@@ -389,9 +419,14 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 
 	// Reset request body
 	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+		_ = form.RemoveAll()
 		return nil, seekErr
 	}
 	c.Request.Body = io.NopCloser(storage)
+	// 调用方可能重复解析或不安装Request.MultipartForm，统一保留每份临时文件的清理责任。
+	cached, _ := c.Get(keyMultipartForms)
+	forms, _ := cached.([]*multipart.Form)
+	c.Set(keyMultipartForms, append(forms, form))
 	return form, nil
 }
 

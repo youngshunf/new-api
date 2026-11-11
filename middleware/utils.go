@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -42,6 +43,9 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 // invalidRequestStatus is the status of a request whose body could not be
 // read or parsed: 413 when the body exceeds MAX_REQUEST_BODY_MB, else 400.
 func invalidRequestStatus(err error) int {
+	if errors.Is(err, common.ErrLargeRequestBusy) {
+		return http.StatusTooManyRequests
+	}
 	if common.IsRequestBodyTooLargeError(err) {
 		return http.StatusRequestEntityTooLarge
 	}

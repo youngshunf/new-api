@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/migrations"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -20,6 +22,51 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+type relayBudgetAuthReadCounter struct{ reads int }
+
+func (r *relayBudgetAuthReadCounter) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
+}
+
+func TestRelayBodyBudgetRegisteredRoutesAuthenticateBeforeGzipRead(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetRelayRouter(engine)
+	SetTaskPluginProtocolRouter(engine)
+	SetVideoRouter(engine)
+	SetTaskRouter(engine)
+	for _, path := range []string{
+		"/v1/chat/completions", "/v1beta/models/gemini-test:generateContent",
+		"/mj/submit/imagine", "/fast/mj/submit/imagine", "/v1/images/edits",
+		"/v1/responses", "/v1/videos", "/v1/video/generations", "/v1/videos/task-1/remix", "/v1/tasks/example",
+	} {
+		t.Run(path, func(t *testing.T) {
+			body := &relayBudgetAuthReadCounter{}
+			request := httptest.NewRequest(http.MethodPost, path, io.NopCloser(body))
+			request.Header.Set("Content-Encoding", "gzip")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+			assert.Zero(t, body.reads, "真实TokenAuth拒绝不能触发gzip.NewReader预读")
+		})
+	}
+	plugin := compileRouterPlugin(t, "budget-auth", "1.0.0", `[
+		{method: "POST", path: "/vendor/budget", type: "submit", render: "native"}
+	]`)
+	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{plugin}, productionPluginRouteHandlers)
+	outer.Use(middleware.BodyStorageCleanup())
+	outer.NoRoute((&pluginRouteDispatcher{registry: registry}).dispatch)
+	body := &relayBudgetAuthReadCounter{}
+	request := httptest.NewRequest(http.MethodPost, "/vendor/budget", io.NopCloser(body))
+	request.Header.Set("Content-Encoding", "gzip")
+	response := httptest.NewRecorder()
+	outer.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.Zero(t, body.reads)
+}
 
 func TestListModelsSupportsOpenAIAndGeminiAuthentication(t *testing.T) {
 	setupRelayRouterTestDB(t)

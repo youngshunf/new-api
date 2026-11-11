@@ -299,6 +299,10 @@ func (d *diskStorage) IsDisk() bool {
 // CreateBodyStorage 根据数据大小创建合适的存储
 func CreateBodyStorage(data []byte) (BodyStorage, error) {
 	size := int64(len(data))
+	// 重建的大正文同样必须落盘；禁用缓存或磁盘错误不能把整包留在内存。
+	if size > RelayMemoryBodyBytes {
+		return newDiskStorage(data, GetDiskCachePath())
+	}
 	threshold := GetDiskCacheThresholdBytes()
 
 	// 检查是否应该使用磁盘缓存
