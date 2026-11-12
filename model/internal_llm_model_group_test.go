@@ -87,7 +87,7 @@ func TestLlmModelGroupsReloadFromOptionSync(t *testing.T) {
 		Value: `{"default":{"publication_revision":9,"models":["gpt-4o-mini"]}}`,
 	}).Error)
 
-	loadOptionsFromDatabase()
+	require.NoError(t, LoadOptionsFromDatabase())
 
 	assert.Equal(t, map[string]bool{"gpt-4o-mini": true}, LlmModelGroupModelSet("default"))
 }
