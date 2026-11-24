@@ -14,6 +14,7 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterTaskPluginEndpoint,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterResponsesWebSocket,
+	dto.FilterExcludeChannel,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -109,6 +110,8 @@ func candidatePassesKindFilters(ch *Channel, exists bool, modelName string, kind
 
 func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilter) bool {
 	switch filter.Kind {
+	case dto.FilterExcludeChannel:
+		return ch.Id != filter.ExcludedChannelID
 	case dto.FilterRequestPath:
 		if filter.RequestPath == "" {
 			return true

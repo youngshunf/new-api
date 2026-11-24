@@ -38,6 +38,7 @@ relay.task_price_not_configured: "模型 {{.Model}} 沒有插件 {{.Plugin}} 的
 relay.task_channel_disabled: "該任務所屬管道已被停用"
 relay.group_saturated: "目前分組負載已飽和，請稍後再試，或升級帳戶以提升服務品質。"
 relay.group_upstream_saturated: "目前分組上游負載已飽和，請稍後再試"
+relay.model_service_unavailable: "模型服務暫時無法使用，請稍後再試。"
 relay.retry_get_channel_failed: "獲取分組 {{.Group}} 下模型 {{.Model}} 的可用管道失敗（retry）：{{.Error}}"
 relay.retry_no_available_channel: "分組 {{.Group}} 下模型 {{.Model}} 的可用管道不存在（retry）"
 relay.access_token_unsupported: "暫不支援使用 access token"

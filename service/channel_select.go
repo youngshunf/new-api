@@ -47,12 +47,13 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 }
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
-	resetNextTry bool
+	Ctx                *gin.Context
+	TokenGroup         string
+	ModelName          string
+	RequestPath        string
+	Retry              *int
+	UseHighestPriority bool
+	resetNextTry       bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -151,6 +152,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				groupRetry = 0
 			}
 			priorityRetry := max(groupRetry-affinityRetryOffset, 0)
+			if param.UseHighestPriority {
+				priorityRetry = 0
+			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
 			channel, _ = model.GetRandomSatisfiedChannel(
@@ -199,10 +203,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
+		priorityRetry := max(param.GetRetry()-affinityRetryOffset, 0)
+		if param.UseHighestPriority {
+			priorityRetry = 0
+		}
 		channel, err = model.GetRandomSatisfiedChannel(
 			param.TokenGroup,
 			param.ModelName,
-			max(param.GetRetry()-affinityRetryOffset, 0),
+			priorityRetry,
 			filters,
 		)
 		if err != nil {

@@ -46,6 +46,7 @@ const (
 	MsgRelayTaskChannelDisabled          = "relay.task_channel_disabled"
 	MsgRelayGroupSaturated               = "relay.group_saturated"
 	MsgRelayGroupUpstreamSaturated       = "relay.group_upstream_saturated"
+	MsgRelayModelServiceUnavailable      = "relay.model_service_unavailable"
 	MsgRelayRetryGetChannelFailed        = "relay.retry_get_channel_failed"
 	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
 	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"

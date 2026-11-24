@@ -412,11 +412,13 @@ func newResponsesWSBillingTest(t *testing.T, expression string, handle func(*web
 		c.Set(common.RequestIdKey, "responses-ws-billing")
 		ResponsesWebSocket(c)
 	})
-	engine.POST("/v1/responses", middleware.TokenAuth(), middleware.ModelRequestRateLimit(), middleware.Distribute(), func(c *gin.Context) {
-		defer func() { fixture.httpDone <- struct{}{} }()
-		c.Set(common.RequestIdKey, "responses-http-billing")
-		Relay(c, types.RelayFormatOpenAIResponses)
-	})
+	for path, format := range map[string]types.RelayFormat{"/v1/responses": types.RelayFormatOpenAIResponses, "/v1/chat/completions": types.RelayFormatOpenAI} {
+		engine.POST(path, middleware.TokenAuth(), middleware.ModelRequestRateLimit(), middleware.Distribute(), func(c *gin.Context) {
+			defer func() { fixture.httpDone <- struct{}{} }()
+			c.Set(common.RequestIdKey, "responses-http-billing")
+			Relay(c, format)
+		})
+	}
 	gateway := httptest.NewServer(engine)
 	fixture.gatewayURL = gateway.URL
 	t.Cleanup(gateway.Close)

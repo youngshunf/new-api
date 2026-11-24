@@ -172,9 +172,8 @@ func GetChannel(
 	return &channel, err
 }
 
-// filterAbilitiesByConstraints applies the same ChannelSatisfiesFilters
-// predicate used by the memory-cache path. A failed channel lookup fails
-// closed when a task-plugin identity is required and fails open otherwise.
+// filterAbilitiesByConstraints 与内存缓存共用 ChannelSatisfiesFilters。
+// 查询渠道失败时，要求任务插件身份或排除故障渠道的请求返回空候选。
 func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) []Ability {
 	if len(abilities) == 0 {
 		return nil
@@ -192,7 +191,7 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 
 	var channels []*Channel
 	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		if identityFilterRequiresKey(filters) {
+		if requiresChannelLookup(filters) {
 			return nil
 		}
 		return abilities
@@ -213,9 +212,9 @@ func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters
 	return filtered
 }
 
-func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
+func requiresChannelLookup(filters []dto.ChannelFilter) bool {
 	for _, filter := range filters {
-		if filter.Kind == dto.FilterTaskPluginIdentity && filter.TaskPluginKey != "" {
+		if filter.Kind == dto.FilterExcludeChannel || (filter.Kind == dto.FilterTaskPluginIdentity && filter.TaskPluginKey != "") {
 			return true
 		}
 	}

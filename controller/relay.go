@@ -107,16 +107,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			service.RecordRequestPolicyTermination(c, newAPIError)
 			logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			responseError := newAPIError
+			if newAPIError.GetErrorCode() == service.ErrorCodeUpstreamAccountUnavailable {
+				message := common.MessageWithRequestId(i18n.T(c, i18n.MsgRelayModelServiceUnavailable), requestId)
+				responseError = types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, http.StatusServiceUnavailable)
+			} else {
+				responseError.SetMessage(common.MessageWithRequestId(responseError.Error(), requestId))
+			}
 			// 重试控制（设计 §13.2）。判定载体是响应头，因此必须先写头再写 body：
 			// Go 在第一次写 body 时才冲刷头表，写反了这四个头一个都到不了 daemon。
 			control := retrycontrol.Resolve(c, retrycontrol.SurfaceRelay,
-				string(newAPIError.GetErrorCode()), newAPIError.StatusCode)
+				string(responseError.GetErrorCode()), responseError.StatusCode)
 			retrycontrol.WriteHeaders(c, control)
 			upstreamURLs := common.UpstreamAddresses(c)
 			if relayFormat != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&
 				strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
-				writeRelayStreamError(c, relayFormat, newAPIError)
+				writeRelayStreamError(c, relayFormat, responseError)
 				return
 			}
 			if relayFormat != types.RelayFormatOpenAIRealtime {
@@ -133,14 +139,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			case types.RelayFormatOpenAIRealtime:
 				// websocket 已完成升级：响应头与 error body 都不再可写，
 				// 这条链路上重试控制无载体可用。
-				helper.WssError(c, ws, newAPIError.ToOpenAIError(upstreamURLs...))
+				helper.WssError(c, ws, responseError.ToOpenAIError(upstreamURLs...))
 			case types.RelayFormatClaude:
 				bodyCopy["type"] = "error"
-				bodyCopy["error"] = newAPIError.ToClaudeError(upstreamURLs...)
-				c.JSON(newAPIError.StatusCode, bodyCopy)
+				bodyCopy["error"] = responseError.ToClaudeError(upstreamURLs...)
+				c.JSON(responseError.StatusCode, bodyCopy)
 			default:
-				bodyCopy["error"] = newAPIError.ToOpenAIError(upstreamURLs...)
-				c.JSON(newAPIError.StatusCode, bodyCopy)
+				bodyCopy["error"] = responseError.ToOpenAIError(upstreamURLs...)
+				c.JSON(responseError.StatusCode, bodyCopy)
 			}
 		}
 	}()
@@ -224,8 +230,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
+			if retryParam.UseHighestPriority && channelErr.GetErrorCode() == types.ErrorCodeGetChannelFailed {
+				// 欠费渠道已从候选集剔除，保留导致切换的失败作为终局原因。
+				newAPIError = relayInfo.LastError
+			}
 			break
 		}
+		retryParam.UseHighestPriority = false
 		service.AppendUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
@@ -274,6 +285,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.LastError = newAPIError
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		if decision.Reason == string(service.ErrorCodeUpstreamAccountUnavailable) {
+			if relayInfo.HasSendResponse() {
+				decision = service.PolicyDecision{Action: "stop", Reason: "response_already_started", Source: "system"}
+			} else {
+				service.GetChannelConstraints(c).AddFilter(taskdto.ChannelFilter{Kind: taskdto.FilterExcludeChannel, ExcludedChannelID: channel.Id})
+				retryParam.UseHighestPriority = true
+			}
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 

@@ -1,10 +1,12 @@
 package service
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -45,6 +47,16 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	}
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+	}
+	if err.GetErrorCode() == ErrorCodeUpstreamAccountUnavailable && c.Request != nil && c.Request.Method == http.MethodPost {
+		if _, pinned, _ := GetChannelConstraints(c).ResolvedPin(); pinned {
+			return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
+		}
+		// 欠费是上游明确拒绝，文本推理可以在另一渠道重新发起。
+		switch c.Request.URL.Path {
+		case "/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/responses/compact":
+			return PolicyDecision{Action: "retry", Reason: string(ErrorCodeUpstreamAccountUnavailable), Source: "system"}
+		}
 	}
 	code := err.StatusCode
 	if code >= 200 && code < 300 {
@@ -109,5 +121,10 @@ func RecordRelayErrorLog(c *gin.Context, channelId int, err *types.NewAPIError, 
 		startTime = time.Now()
 	}
 	useTimeSeconds := int(time.Since(startTime).Seconds())
-	model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(common.UpstreamAddresses(c)...), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+	content := err.MaskSensitiveErrorWithStatusCode(common.UpstreamAddresses(c)...)
+	if err.GetErrorCode() == ErrorCodeUpstreamAccountUnavailable {
+		other.SetAdmin("upstream_error_detail", content)
+		content = i18n.Translate("en", i18n.MsgRelayModelServiceUnavailable)
+	}
+	model.RecordErrorLog(c, userId, channelId, modelName, tokenName, content, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 }

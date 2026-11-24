@@ -41,6 +41,7 @@ const (
 	FilterTaskPluginEndpoint ChannelFilterKind = "task_plugin_endpoint"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	FilterExcludeChannel     ChannelFilterKind = "exclude_channel"
 	// FilterRequestBudget 不由请求添加：每次选择都无条件剔除当期用满的渠道，
 	// 该种类只用于说明候选被谁排除。
 	FilterRequestBudget ChannelFilterKind = "request_budget"
@@ -48,6 +49,7 @@ const (
 
 type ChannelFilter struct {
 	Kind                   ChannelFilterKind
+	ExcludedChannelID      int
 	RequestPath            string
 	TaskPluginKey          string
 	TaskPluginKeys         []string

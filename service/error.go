@@ -18,6 +18,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
+const ErrorCodeUpstreamAccountUnavailable types.ErrorCode = "upstream_account_unavailable"
+
 func MidjourneyErrorWrapper(code int, desc string) *taskdto.MidjourneyResponse {
 	return &taskdto.MidjourneyResponse{
 		Code:        code,
@@ -92,7 +94,10 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		return
 	}
 	CloseResponseBodyGracefully(resp)
-	var errResponse dto.GeneralErrorResponse
+	var errResponse struct {
+		dto.GeneralErrorResponse
+		Code any `json:"code"`
+	}
 	responseBodyText := string(responseBody)
 	responseBodyPreview := common.LocalLogPreview(responseBodyText)
 	buildErrWithBody := func(message string) error {
@@ -126,6 +131,10 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
+			if isBailianArrearage(resp.StatusCode, oaiError.Code, oaiError.Message) ||
+				(resp.StatusCode == http.StatusBadRequest && errResponse.Code == "Arrearage") {
+				oaiError.Code = string(ErrorCodeUpstreamAccountUnavailable)
+			}
 			oaiError.Message = withProviderRequestID(oaiError.Message, providerRequestID)
 			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
 			if showBodyWhenFail {
@@ -140,11 +149,25 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// raw body so the upstream failure remains diagnosable.
 		logger.LogError(ctx, common.LogText("bad response status code %d with empty error message, body: %s", resp.StatusCode, responseBodyPreview))
 	}
-	newApiErr = types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+	code := types.ErrorCodeBadResponseStatusCode
+	if isBailianArrearage(resp.StatusCode, errResponse.Code, message) {
+		code = ErrorCodeUpstreamAccountUnavailable
+	}
+	newApiErr = types.NewOpenAIError(errors.New(message), code, resp.StatusCode)
 	if showBodyWhenFail {
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+func isBailianArrearage(status int, code any, message string) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	// 兼容代理丢掉百炼错误码的响应，必须同时命中百炼原文和欠费文档链接。
+	return code == "Arrearage" ||
+		(strings.HasPrefix(message, "Access denied, please make sure your account is in good standing.") &&
+			strings.Contains(message, "https://help.aliyun.com/zh/model-studio/error-code#overdue-payment"))
 }
 
 func normalizedProviderRequestID(requestID string) string {

@@ -1,17 +1,23 @@
 package controller
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/retrycontrol"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -169,6 +175,104 @@ func TestRelayTerminalFailureCarriesHeadersAndBodyCopy(t *testing.T) {
 			assert.Equal(t, sentHeaders.Get(retrycontrol.HeaderRetryReason), control["reason"])
 			assert.Equal(t, false, control["retryable"])
 			assert.EqualValues(t, 0, control["retry_after_ms"])
+		})
+	}
+}
+
+func TestResponsesHTTPFailoverOnUpstreamAccountArrearage(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	const providerID = "bailian-request-123"
+	for _, tc := range []struct {
+		name, errorBody string
+		chat            bool
+		withBackup      bool
+		retries         int
+		wantStatus      int
+	}{
+		{"结构化百炼错误切换渠道", `{"error":{"code":"Arrearage","message":"Account is past due"},"request_id":"` + providerID + `"}`, true, true, 1, http.StatusOK},
+		{"代理只保留百炼文案时切换渠道", `{"error":{"code":"bad_response_status_code","message":"Access denied, please make sure your account is in good standing. For details, see: https://help.aliyun.com/zh/model-studio/error-code#overdue-payment"},"request_id":"` + providerID + `"}`, false, true, 1, http.StatusOK},
+		{"无后备时返回服务不可用", `{"code":"Arrearage","message":"Account is past due","request_id":"` + providerID + `"}`, false, false, 1, http.StatusServiceUnavailable},
+		{"零重试预算时返回服务不可用", `{"code":"Arrearage","message":"Account is past due","request_id":"` + providerID + `"}`, true, true, 0, http.StatusServiceUnavailable},
+		{"普通参数错误维持原错误", `{"error":{"code":"InvalidParameter","message":"unsupported input"}}`, false, true, 1, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
+			oldRetries, oldErrorLog := common.RetryTimes, constant.ErrorLogEnabled
+			common.RetryTimes, constant.ErrorLogEnabled = tc.retries, true
+			t.Cleanup(func() { common.RetryTimes, constant.ErrorLogEnabled = oldRetries, oldErrorLog })
+			var primaryCalls, backupCalls atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				primaryCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, tc.errorBody)
+			}))
+			t.Cleanup(primary.Close)
+			require.NoError(t, model.DB.Model(fixture.channel).Update("base_url", primary.URL).Error)
+			require.NoError(t, model.DB.Model(&model.Ability{}).Where("channel_id = ?", fixture.channel.Id).Update("priority", 20).Error)
+			if tc.withBackup {
+				backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					backupCalls.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					if tc.chat {
+						_, _ = io.WriteString(w, `{"id":"backup-completed","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"id":"backup-completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+				}))
+				t.Cleanup(backup.Close)
+				channel := &model.Channel{Name: "responses-backup", Key: "backup-key", Status: common.ChannelStatusEnabled, Type: constant.ChannelTypeOpenAI, Group: "default", Models: "ws-billing", BaseURL: &backup.URL}
+				require.NoError(t, model.DB.Create(channel).Error)
+				require.NoError(t, model.DB.Create(&model.Ability{ChannelId: channel.Id, Model: "ws-billing", Group: "default", Enabled: true}).Error)
+				t.Cleanup(func() {
+					require.NoError(t, model.DB.Where("channel_id = ?", channel.Id).Delete(&model.Ability{}).Error)
+					require.NoError(t, model.DB.Delete(channel).Error)
+				})
+			}
+			path, requestBody := "/v1/responses", `{"model":"ws-billing","input":"hello"}`
+			if tc.chat {
+				path, requestBody = "/v1/chat/completions", `{"model":"ws-billing","messages":[{"role":"user","content":"hello"}]}`
+			}
+			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+path, strings.NewReader(requestBody))
+			require.NoError(t, err)
+			request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept-Language", "zh-CN")
+			response, err := http.DefaultClient.Do(request)
+			require.NoError(t, err)
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, response.Body.Close())
+			require.NoError(t, err)
+			<-fixture.httpDone
+			require.Equal(t, tc.wantStatus, response.StatusCode, string(body))
+			assert.EqualValues(t, 1, primaryCalls.Load())
+			switch tc.wantStatus {
+			case http.StatusOK:
+				assert.EqualValues(t, 1, backupCalls.Load())
+				assert.Contains(t, string(body), "backup-completed")
+			case http.StatusServiceUnavailable:
+				assert.Zero(t, backupCalls.Load())
+				assert.Contains(t, string(body), "模型服务暂不可用")
+				assert.Contains(t, string(body), "responses-http-billing")
+				assert.NotContains(t, string(body), providerID)
+				assert.NotContains(t, string(body), "Account is past due")
+			case http.StatusBadRequest:
+				assert.Zero(t, backupCalls.Load())
+				assert.Contains(t, string(body), "unsupported input")
+			}
+			if tc.wantStatus != http.StatusBadRequest {
+				var entry model.Log
+				require.NoError(t, model.LOG_DB.Where("channel_id = ? AND type = ?", fixture.channel.Id, model.LogTypeError).First(&entry).Error)
+				assert.Contains(t, entry.Other, providerID)
+				assert.NotContains(t, entry.Content, providerID)
+				logs, err := model.GetLogByTokenId(fixture.token.Id)
+				require.NoError(t, err)
+				require.NotEmpty(t, logs)
+				for _, entry := range logs {
+					assert.NotContains(t, entry.Content, providerID)
+					assert.NotContains(t, entry.Other, providerID)
+				}
+			}
 		})
 	}
 }
