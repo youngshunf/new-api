@@ -2,8 +2,10 @@ package ali
 
 import (
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -162,4 +164,34 @@ func TestAliSTTErrorIncludesProviderRequestID(t *testing.T) {
 	assert.Nil(t, usage)
 	assert.Contains(t, err.Error(), "InvalidParameter")
 	assert.Contains(t, err.Error(), "provider-stt-1")
+}
+
+// 网关发给上游的 input_audio 必须带 format（由上传文件扩展名或 Content-Type 推出）。
+func TestAliSTTRequestForwardsAudioFormat(t *testing.T) {
+	cases := []struct{ filename, contentType, want string }{
+		{"a.wav", "audio/wav", "wav"},
+		{"voice.MP3", "application/octet-stream", "mp3"},
+		{"noext", "audio/mp4", "m4a"},
+		{"clip.webm", "audio/webm", "webm"},
+	}
+	for _, tc := range cases {
+		body := &strings.Builder{}
+		mw := multipart.NewWriter(body)
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", `form-data; name="file"; filename="`+tc.filename+`"`)
+		h.Set("Content-Type", tc.contentType)
+		part, err := mw.CreatePart(h)
+		require.NoError(t, err)
+		_, _ = part.Write([]byte("RIFFxxxx"))
+		require.NoError(t, mw.Close())
+
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body.String()))
+		c.Request.Header.Set("Content-Type", mw.FormDataContentType())
+
+		r, err := ConvertAudioRequestForAliSTT(c, &relaycommon.RelayInfo{}, dto.AudioRequest{Model: "fun-asr-flash-2026-06-15"})
+		require.NoError(t, err)
+		raw, _ := io.ReadAll(r)
+		assert.Equal(t, tc.want, gjson.GetBytes(raw, "messages.0.content.0.input_audio.format").String(), tc.filename)
+	}
 }

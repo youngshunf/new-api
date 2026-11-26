@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -19,7 +22,8 @@ import (
 // ── DashScope STT (qwen3-asr) via Chat Completions ─────────────────────────────
 
 type AliSTTInputAudio struct {
-	Data string `json:"data"`
+	Data   string `json:"data"`
+	Format string `json:"format,omitempty"`
 }
 
 type AliSTTChatMessageContent struct {
@@ -59,6 +63,26 @@ type AliSTTResponse struct {
 	} `json:"usage"`
 }
 
+// contentTypeAudioFormat 是 Content-Type 到上游 format 的映射（扩展名缺失时兜底）。
+var contentTypeAudioFormat = map[string]string{
+	"audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+	"audio/mpeg": "mp3", "audio/mp3": "mp3",
+	"audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a",
+	"audio/webm": "webm", "audio/ogg": "ogg", "audio/flac": "flac",
+	"audio/aac": "aac", "audio/amr": "amr",
+}
+
+// aliSTTAudioFormat 优先取文件扩展名，其次取 Content-Type，推不出则返回空串。
+func aliSTTAudioFormat(filename, contentType string) string {
+	if ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), "."); ext != "" {
+		return ext
+	}
+	if mt, _, err := mime.ParseMediaType(contentType); err == nil {
+		return contentTypeAudioFormat[strings.ToLower(mt)]
+	}
+	return ""
+}
+
 // ConvertAudioRequestForAliSTT converts an OpenAI multipart AudioRequest to Ali qwen3-asr chat format.
 func ConvertAudioRequestForAliSTT(c *gin.Context, info *relaycommon.RelayInfo, req dto.AudioRequest) (io.Reader, error) {
 	// Ensure multipart form is parsed
@@ -84,6 +108,7 @@ func ConvertAudioRequestForAliSTT(c *gin.Context, info *relaycommon.RelayInfo, r
 		contentType = "audio/wav"
 	}
 
+	format := aliSTTAudioFormat(header.Filename, contentType)
 	encodedData := base64.StdEncoding.EncodeToString(audioData)
 	dataURI := fmt.Sprintf("data:%s;base64,%s", contentType, encodedData)
 
@@ -96,7 +121,8 @@ func ConvertAudioRequestForAliSTT(c *gin.Context, info *relaycommon.RelayInfo, r
 					{
 						Type: "input_audio",
 						InputAudio: &AliSTTInputAudio{
-							Data: dataURI,
+							Data:   dataURI,
+							Format: format,
 						},
 					},
 				},
