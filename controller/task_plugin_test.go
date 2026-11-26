@@ -220,6 +220,29 @@ func taskPluginOptionsHasKey(t *testing.T, key string) bool {
 	return false
 }
 
+// 控制台的提供商选择器直接读 plugin.models.length；仅做请求处理、不声明 models 的插件
+// 必须序列化成 []，不能是 null，否则渠道页整页崩溃。
+func TestTaskPluginOptionsModelsIsNeverNull(t *testing.T) {
+	setupTaskPluginFactoryDisableTest(t)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/task_plugin_options", nil)
+	GetTaskPluginOptions(context)
+	var response struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			Key    string `json:"key"`
+			Models any    `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	require.NotEmpty(t, response.Data)
+	for _, option := range response.Data {
+		assert.IsType(t, []any{}, option.Models, "plugin %q models must be an array, got %v", option.Key, option.Models)
+	}
+}
+
 func TestDisableFactoryPluginPersistsOptionAndHidesFromBindOptions(t *testing.T) {
 	setupTaskPluginFactoryDisableTest(t)
 	const key = "kling"

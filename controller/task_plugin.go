@@ -958,6 +958,11 @@ func GetTaskPluginOptions(c *gin.Context) {
 			} else {
 				_, _, hasIcon = plugins.Icon(meta.Key)
 			}
+			// 仅做请求处理的插件不声明 models；前端直接读 models.length，必须是 [] 而不是 null。
+			models := meta.Models
+			if models == nil {
+				models = []string{}
+			}
 			option := gin.H{
 				"key":             meta.Key,
 				"name":            meta.Name,
@@ -967,7 +972,7 @@ func GetTaskPluginOptions(c *gin.Context) {
 				"baseUrl":         meta.BaseURL,
 				"sortPriority":    meta.SortPriority,
 				"website":         meta.Website,
-				"models":          meta.Models,
+				"models":          models,
 				"channelTypes":    meta.ChannelTypes,
 				"upstreams":       meta.Upstreams,
 				"usageSchema":     meta.UsageSchema,
