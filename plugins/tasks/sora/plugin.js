@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.5",
+  version: "1.1.6",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -130,7 +130,8 @@ function agnesValues(values, hasFiles) {
   if (size && /^\d+x\d+$/.test(size)) {
     const aspect = AGNES_ASPECT_BY_SIZE[size];
     if (!aspect) throw new Error("agnes video does not support size " + size);
-    if (values.aspect_ratio === undefined) values.aspect_ratio = aspect;
+    // keyframe 模式画幅跟随首帧图，上游拒收 aspect_ratio。
+    if (values.aspect_ratio === undefined && values.mode !== "keyframe") values.aspect_ratio = aspect;
     delete values.size;
   }
   return values;
@@ -223,6 +224,7 @@ export function listArtifacts(task) {
 
 // agnes 走 Sora 方言却不实现 /v1/videos/{id}/content：其查询快照只给 video_id、不给 url，
 // 出片地址要按 video_id 问自家端点 GET {base}/agnesapi?video_id=<id>，响应顶层 url 即出片。
+// keyframe/reference 任务按 video_id 查询还必须带 model_name（纯文生带上同样可用），取快照里的上游模型名。
 // 快照已带 url 就直接用。真 Sora 不返回 video_id；New API 网关上游由它自己的 sora 插件取片。两者都仍走 /content。
 function agnesVideoURL(ctx) {
   const data = ctx.data && typeof ctx.data === "object" && !Array.isArray(ctx.data) ? ctx.data : {};
@@ -230,8 +232,9 @@ function agnesVideoURL(ctx) {
   if (!videoID || (ctx.upstream && ctx.upstream.kind === "new_api")) return "";
   let url = trimmed(data.url);
   if (!url) {
+    const model = trimmed(data.model);
     const response = utils.fetch({
-      url: ctx.baseUrl + "/agnesapi?video_id=" + encodeURIComponent(videoID),
+      url: ctx.baseUrl + "/agnesapi?video_id=" + encodeURIComponent(videoID) + (model ? "&model_name=" + encodeURIComponent(model) : ""),
       headers: { Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
     });
     if (response.status !== 200 || !response.body || typeof response.body !== "object") {

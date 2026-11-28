@@ -64,6 +64,9 @@ func TestSoraArtifactContentAgnesLookup(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/agnesapi", r.URL.Path)
 		assert.Equal(t, "Bearer agnes-key", r.Header.Get("Authorization"))
+		if r.URL.Query().Get("video_id") == "vid/with space" {
+			assert.Equal(t, "agnes-video-2.5-flash", r.URL.Query().Get("model_name"))
+		}
 		answer := lookupBodies[r.URL.Query().Get("video_id")]
 		w.WriteHeader(answer.status)
 		_, _ = w.Write([]byte(answer.body))
@@ -94,7 +97,7 @@ func TestSoraArtifactContentAgnesLookup(t *testing.T) {
 		wantErr     string
 		wantLookups int
 	}{
-		{name: "agnes lookup", adaptor: vendor, data: map[string]any{"id": "video_up", "status": "completed", "video_id": "vid/with space"}, want: direct, wantLookups: 1},
+		{name: "agnes lookup", adaptor: vendor, data: map[string]any{"id": "video_up", "status": "completed", "video_id": "vid/with space", "model": "agnes-video-2.5-flash"}, want: direct, wantLookups: 1},
 		{name: "agnes snapshot url", adaptor: vendor, data: map[string]any{"id": "video_up", "video_id": "vid", "url": videoURL}, want: direct},
 		{name: "agnes lookup without url", adaptor: vendor, data: map[string]any{"id": "video_up", "video_id": "no-url"}, wantErr: "artifact_not_found", wantLookups: 1},
 		{name: "agnes lookup denied", adaptor: vendor, data: map[string]any{"id": "video_up", "video_id": "denied"}, wantErr: "agnes video lookup failed: HTTP 403", wantLookups: 1},
@@ -207,7 +210,7 @@ func TestSoraSubmitAgnesVideoDialect(t *testing.T) {
 		assert.Equal(t, map[string]any{
 			"model": "agnes-video-2.5-flash", "prompt": "海浪", "mode": "keyframe",
 			"first_frame": "https://s3.example.com/frame.png?X-Amz-Expires=3600",
-			"seconds":     "4", "aspect_ratio": "16:9",
+			"seconds":     "4",
 		}, body(t, descriptor))
 	})
 	t.Run("agnes first frame must be a URL", func(t *testing.T) {
@@ -315,6 +318,6 @@ func TestSoraAgnesMultipartFirstFrameThroughHostRequest(t *testing.T) {
 	require.NoError(t, common.Unmarshal(sent, &body))
 	assert.Equal(t, map[string]any{
 		"model": videoModel, "prompt": "海浪", "mode": "keyframe", "first_frame": frame,
-		"seconds": "4", "aspect_ratio": "16:9",
+		"seconds": "4",
 	}, body)
 }
