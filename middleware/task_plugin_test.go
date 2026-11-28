@@ -2098,57 +2098,68 @@ func TestPrepareTaskPluginEndpointFiltersEachSharedCandidate(t *testing.T) {
 	}
 }
 
+func setupChannelRoutingTestDB(t *testing.T, dialect string) *gorm.DB {
+	t.Helper()
+	dsn := ""
+	if dialect != "sqlite" {
+		dsn = os.Getenv("TEST_" + strings.ToUpper(dialect) + "_DSN")
+		if dsn == "" {
+			t.Skip("database test DSN not configured")
+		}
+	}
+	previousDB, previousMain, previousLog := model.DB, common.MainDatabaseType(), common.LogDatabaseType()
+	previousPath, previousMaster := common.SQLitePath, common.IsMasterNode
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	common.SQLitePath, common.IsMasterNode = t.TempDir()+"/routing.db", false
+	common.RedisEnabled = false
+	t.Setenv("SQL_DSN", dsn)
+	// 本 fork 的非 master 只核正式迁移账本：隔离库先以 master 身份走真实迁移，再以非 master 重开。
+	// 必须重开——迁移时 GORM 已缓存不带前缀的表结构，沿用该连接会让下面的表前缀隔离失效。
+	common.IsMasterNode = true
+	require.NoError(t, model.InitDB())
+	migrated, err := model.DB.DB()
+	require.NoError(t, err)
+	require.NoError(t, migrated.Close())
+	common.IsMasterNode = false
+	require.NoError(t, model.InitDB())
+	database := model.DB
+	// Every table belongs to this run, including when a developer points
+	// a test DSN at a database shared with another test suite.
+	database.Config.NamingStrategy = schema.NamingStrategy{TablePrefix: "endpoint_route_" + common.GetUUID() + "_"}
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Task{}))
+	t.Cleanup(func() {
+		for _, table := range []any{&model.Ability{}, &model.Channel{}, &model.Task{}} {
+			require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(table).Error)
+		}
+		common.MemoryCacheEnabled = true
+		model.InitChannelCache()
+		require.NoError(t, database.Migrator().DropTable(&model.Ability{}, &model.Channel{}, &model.Task{}))
+		model.DB = previousDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		common.SQLitePath, common.IsMasterNode = previousPath, previousMaster
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		if previousDB != nil {
+			model.InitChannelCache()
+		}
+		sqlDB, err := database.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+	})
+	query := "SELECT version()"
+	if dialect == "sqlite" {
+		query = "SELECT sqlite_version()"
+	}
+	var version string
+	require.NoError(t, database.Raw(query).Scan(&version).Error)
+	t.Logf("database version: %s", version)
+	return database
+}
+
 func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 	require.NoError(t, appI18n.Init())
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {
-			dsn := ""
-			if dialect != "sqlite" {
-				dsn = os.Getenv("TEST_" + strings.ToUpper(dialect) + "_DSN")
-				if dsn == "" {
-					t.Skip("database test DSN not configured")
-				}
-			}
-			previousDB, previousMain, previousLog := model.DB, common.MainDatabaseType(), common.LogDatabaseType()
-			previousPath, previousMaster := common.SQLitePath, common.IsMasterNode
-			previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
-			common.SQLitePath, common.IsMasterNode = t.TempDir()+"/routing.db", false
-			common.RedisEnabled = false
-			t.Setenv("SQL_DSN", dsn)
-			// 本 fork 的非 master 只核正式迁移账本；隔离库先以 master 身份走真实迁移，再回到非 master。
-			common.IsMasterNode = true
-			require.NoError(t, model.InitDB())
-			common.IsMasterNode = false
-			database := model.DB
-			// Every table belongs to this run, including when a developer points
-			// a test DSN at a database shared with another test suite.
-			database.Config.NamingStrategy = schema.NamingStrategy{TablePrefix: "endpoint_route_" + common.GetUUID() + "_"}
-			require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Task{}))
-			t.Cleanup(func() {
-				for _, table := range []any{&model.Ability{}, &model.Channel{}, &model.Task{}} {
-					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(table).Error)
-				}
-				common.MemoryCacheEnabled = true
-				model.InitChannelCache()
-				require.NoError(t, database.Migrator().DropTable(&model.Ability{}, &model.Channel{}, &model.Task{}))
-				model.DB = previousDB
-				common.SetDatabaseTypes(previousMain, previousLog)
-				common.SQLitePath, common.IsMasterNode = previousPath, previousMaster
-				common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
-				if previousDB != nil {
-					model.InitChannelCache()
-				}
-				sqlDB, err := database.DB()
-				require.NoError(t, err)
-				require.NoError(t, sqlDB.Close())
-			})
-			query := "SELECT version()"
-			if dialect == "sqlite" {
-				query = "SELECT sqlite_version()"
-			}
-			var version string
-			require.NoError(t, database.Raw(query).Scan(&version).Error)
-			t.Logf("database version: %s", version)
+			database := setupChannelRoutingTestDB(t, dialect)
 
 			for _, memoryCache := range []bool{false, true} {
 				t.Run(fmt.Sprintf("memory_cache=%t", memoryCache), func(t *testing.T) {

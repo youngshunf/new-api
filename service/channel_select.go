@@ -118,17 +118,14 @@ func (p *RetryParam) ResetRetryNextTry() {
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
-	var channel *model.Channel
-	var err error
-	selectGroup := param.TokenGroup
-	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	filters := GetChannelConstraints(param.Ctx).Filters
 	affinityRetryOffset := param.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
 
 	if param.TokenGroup == "auto" {
+		userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
 		if len(autoGroups) == 0 {
-			return nil, selectGroup, errors.New("auto groups is not enabled")
+			return nil, param.TokenGroup, errors.New("auto groups is not enabled")
 		}
 
 		// startGroupIndex: the group index to start searching from
@@ -142,6 +139,8 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 		}
 
+		// A later group can still serve the model after an earlier lookup fails.
+		var lookupErr error
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
 			// Calculate priorityRetry for current group
@@ -157,13 +156,16 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(
+			candidate, groupErr := model.GetRandomSatisfiedChannel(
 				autoGroup,
 				param.ModelName,
 				priorityRetry,
 				filters,
 			)
-			if channel == nil {
+			if groupErr != nil {
+				lookupErr = groupErr
+			}
+			if groupErr != nil || candidate == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
 				logger.LogDebug(param.Ctx, "No available channel in group %s for model %s at priorityRetry %d, trying next group", autoGroup, param.ModelName, priorityRetry)
@@ -178,7 +180,6 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				continue
 			}
 			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
-			selectGroup = autoGroup
 			logger.LogDebug(param.Ctx, "Auto selected group: %s", autoGroup)
 
 			// Prepare state for next retry
@@ -200,24 +201,25 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				// 保持在当前分组，保存当前状态
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i)
 			}
-			break
+			return candidate, autoGroup, nil
 		}
-	} else {
-		priorityRetry := max(param.GetRetry()-affinityRetryOffset, 0)
-		if param.UseHighestPriority {
-			priorityRetry = 0
-		}
-		channel, err = model.GetRandomSatisfiedChannel(
-			param.TokenGroup,
-			param.ModelName,
-			priorityRetry,
-			filters,
-		)
-		if err != nil {
-			return nil, param.TokenGroup, err
-		}
+		return nil, param.TokenGroup, lookupErr
 	}
-	return channel, selectGroup, nil
+
+	priorityRetry := max(param.GetRetry()-affinityRetryOffset, 0)
+	if param.UseHighestPriority {
+		priorityRetry = 0
+	}
+	channel, err := model.GetRandomSatisfiedChannel(
+		param.TokenGroup,
+		param.ModelName,
+		priorityRetry,
+		filters,
+	)
+	if err != nil {
+		return nil, param.TokenGroup, err
+	}
+	return channel, param.TokenGroup, nil
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
@@ -257,16 +259,11 @@ func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []strin
 			}
 			pluginKeys = append(pluginKeys, candidate.Meta.Key)
 			for _, channelType := range candidate.Meta.ChannelTypes {
-				if channelType == 0 || channelType == constant.ChannelTypeTaskPlugin {
-					continue
-				}
 				if _, duplicate := seen[channelType]; duplicate {
 					continue
 				}
-				if plugin, indexed := generation.GetByChannelType(channelType); indexed && plugin == candidate {
-					seen[channelType] = struct{}{}
-					channelTypes = append(channelTypes, channelType)
-				}
+				seen[channelType] = struct{}{}
+				channelTypes = append(channelTypes, channelType)
 			}
 		}
 		if expectedFound {
@@ -302,8 +299,7 @@ type ChannelSelectError struct {
 	// FilterKind and Channel identify a candidate rejected by request filters.
 	FilterKind dto.ChannelFilterKind
 	Channel    *model.Channel
-	// NoAvailableChannel marks the "no channel for this group and model"
-	// outcome so the distributor can name the claiming task plugin.
+	// NoAvailableChannel lets the distributor log any plugins claiming the model.
 	NoAvailableChannel bool
 }
 
@@ -381,7 +377,15 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 	if channel == nil {
 		var err error
+		var configured bool
 		channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
+		if channel == nil && err == nil {
+			groups := []string{usingGroup}
+			if usingGroup == "auto" {
+				groups = GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
+			}
+			configured, err = model.IsModelConfiguredForGroups(groups, modelName)
+		}
 		if err != nil {
 			showGroup := usingGroup
 			if usingGroup == "auto" {
@@ -393,8 +397,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 		}
 		if channel == nil {
+			status, messageID := http.StatusNotFound, i18n.MsgDistributorModelNotFound
+			if configured {
+				status, messageID = http.StatusServiceUnavailable, i18n.MsgDistributorNoAvailableChannel
+			}
 			return nil, selectGroup, &ChannelSelectError{
-				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
+				StatusCode: status, Code: types.ErrorCodeModelNotFound, MessageID: messageID,
 				Params: map[string]any{"Group": usingGroup, "Model": modelName}, NoAvailableChannel: true,
 			}
 		}
