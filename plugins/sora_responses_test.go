@@ -183,13 +183,43 @@ func TestSoraSubmitAgnesVideoDialect(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "agnes video does not support size 1234x567")
 	})
+	t.Run("agnes first frame URL from multipart text field becomes keyframe", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5-flash",
+			"action":        "image_to_video",
+			"requestBody": map[string]any{
+				"model": "agnes-video-2.5-flash", "prompt": "海浪", "seconds": 4, "size": "1280x720",
+				"input_reference": "https://s3.example.com/frame.png?X-Amz-Expires=3600",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{
+			"model": "agnes-video-2.5-flash", "prompt": "海浪", "mode": "keyframe",
+			"first_frame": "https://s3.example.com/frame.png?X-Amz-Expires=3600",
+			"seconds":     "4", "aspect_ratio": "16:9",
+		}, body(t, descriptor))
+	})
+	t.Run("agnes first frame must be a URL", func(t *testing.T) {
+		_, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "input_reference": "data:image/png;base64,AAAA"},
+		})
+		require.ErrorContains(t, err, "agnes video first frame must be an http(s) URL")
+	})
+	t.Run("agnes first frame conflicts with another mode", func(t *testing.T) {
+		_, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "image": "https://s3.example.com/frame.png"},
+		})
+		require.ErrorContains(t, err, "agnes video first frame requires keyframe mode")
+	})
 	t.Run("agnes first frame file is rejected before dispatch", func(t *testing.T) {
 		_, err := submit(t, map[string]any{
 			"upstreamModel": "agnes-video-2.5",
 			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪"},
 			"files":         []any{map[string]any{"field": "input_reference", "ref": "f0", "filename": "a.png"}},
 		})
-		require.ErrorContains(t, err, "agnes video only supports text mode")
+		require.ErrorContains(t, err, "agnes video takes image URLs, not uploaded files")
 	})
 	t.Run("real sora passes through unchanged", func(t *testing.T) {
 		descriptor, err := submit(t, map[string]any{
