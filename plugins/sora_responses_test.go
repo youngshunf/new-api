@@ -1,6 +1,9 @@
 package plugins_test
 
 import (
+	"bytes"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -176,6 +179,14 @@ func TestSoraSubmitAgnesVideoDialect(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "seconds": "4", "size": "1080P"}, body(t, descriptor))
 	})
+	t.Run("agnes duration becomes seconds and extra fields are dropped", func(t *testing.T) {
+		descriptor, err := submit(t, map[string]any{
+			"upstreamModel": "agnes-video-2.5",
+			"requestBody":   map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "duration": 8, "metadata": map[string]any{"seconds": 8}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"model": "agnes-video-2.5", "prompt": "海浪", "mode": "text", "seconds": "8"}, body(t, descriptor))
+	})
 	t.Run("agnes unknown pixel size is rejected before dispatch", func(t *testing.T) {
 		_, err := submit(t, map[string]any{
 			"upstreamModel": "agnes-video-2.5",
@@ -267,4 +278,43 @@ func TestSoraAgnesSquareSizeUsageFacts(t *testing.T) {
 			assert.Equal(t, map[string]float64{"seconds": 4}, ratios)
 		})
 	}
+}
+
+// OpenAI 类型渠道上的 multipart 建单不经插件解码器，宿主把表单归一成自己的请求结构：seconds 另抄成 duration，
+// 未知字段进 metadata。agnes 拒收多余字段，发给它的请求体只能是它认的那几个。
+func TestSoraAgnesMultipartFirstFrameThroughHostRequest(t *testing.T) {
+	const videoModel = "agnes-video-2.5-flash"
+	const frame = "https://s3.example.com/frame.png?X-Amz-Expires=3600"
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	for _, field := range [][2]string{{"model", videoModel}, {"prompt", "海浪"}, {"seconds", "4"}, {"size", "1280x720"}, {"input_reference", frame}} {
+		require.NoError(t, writer.WriteField(field[0], field[1]))
+	}
+	require.NoError(t, writer.Close())
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:     &relaycommon.ChannelMeta{ApiKey: "agnes-key", ChannelBaseUrl: "https://api.agnes.example", UpstreamModelName: videoModel},
+		OriginModelName: videoModel,
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	adaptor := taskplugin.New(loadSoraPlugin(t))
+	adaptor.Init(info)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(form.Bytes()))
+	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	// 与生产分发中间件一致：请求体先进可重读缓存。
+	storage, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+	c.Request.Body = io.NopCloser(storage)
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+	reader, err := adaptor.BuildRequestBody(c, info)
+	require.NoError(t, err)
+	sent, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, common.Unmarshal(sent, &body))
+	assert.Equal(t, map[string]any{
+		"model": videoModel, "prompt": "海浪", "mode": "keyframe", "first_frame": frame,
+		"seconds": "4", "aspect_ratio": "16:9",
+	}, body)
 }

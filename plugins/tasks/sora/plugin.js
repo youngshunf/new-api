@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.4",
+  version: "1.1.5",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -120,6 +120,10 @@ function agnesValues(values, hasFiles) {
     delete values.input_reference;
     delete values.image;
   }
+  // multipart 建单经宿主归一后会另带 `duration`，并把未知字段拼成 `metadata`；agnes 拒收一切多余字段。
+  if (values.seconds === undefined) values.seconds = values.duration;
+  delete values.duration;
+  delete values.metadata;
   // 计费按 extractUsage 的请求时长（缺省 4 秒）预扣；agnes 自身缺省 5 秒，缺省时显式发送计费时长，出片与计费一致。
   values.seconds = String(values.seconds === undefined ? AGNES_BILLED_DEFAULT_SECONDS : values.seconds);
   const size = trimmed(values.size);
